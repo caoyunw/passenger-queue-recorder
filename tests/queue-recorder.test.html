@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>乘客队列记录工具测试</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 0;
+      padding: 24px;
+      color: #202938;
+      background: #f6f8fb;
+    }
+
+    h1 {
+      margin-top: 0;
+    }
+
+    #summary {
+      padding: 12px 16px;
+      border-radius: 8px;
+      background: #e8edf4;
+      font-weight: 700;
+    }
+
+    #summary.pass {
+      color: #166534;
+      background: #dcfce7;
+    }
+
+    #summary.fail {
+      color: #991b1b;
+      background: #fee2e2;
+    }
+
+    #results {
+      padding-left: 24px;
+    }
+
+    #results li {
+      margin: 10px 0;
+    }
+
+    .pass {
+      color: #16803c;
+    }
+
+    .fail {
+      color: #c33b32;
+    }
+
+    iframe {
+      display: none;
+    }
+  </style>
+</head>
+<body data-status="running" data-failures="0">
+  <h1>乘客队列记录工具测试</h1>
+  <p id="summary">正在等待生产页面加载...</p>
+  <ol id="results"></ol>
+  <iframe id="app" title="乘客队列记录工具"></iframe>
+
+  <script>
+    const results = document.querySelector('#results');
+    const summary = document.querySelector('#summary');
+    let passed = 0;
+    let failed = 0;
+    let suiteFinished = false;
+    let timeoutId;
+    const STORAGE_KEY = 'passenger-queue-recorder-state-v5';
+    const originalStoredState = localStorage.getItem(STORAGE_KEY);
+    let loadPhase = 'initial';
+    const DEFAULT_COLORS = [
+      { name: '红色', value: 1, hex: '#e54c4c' },
+      { name: '黄色', value: 2, hex: '#f3bd3d' },
+      { name: '蓝色', value: 3, hex: '#3478f6' },
+      { name: '绿色', value: 4, hex: '#32a852' },
+      { name: '粉色', value: 5, hex: '#ec71a5' },
+      { name: '紫色', value: 6, hex: '#8b5cf6' },
+      { name: '天蓝色', value: 7, hex: '#58bde9' },
+      { name: '棕色', value: 8, hex: '#8b5a3c' },
+      { name: '橙色', value: 9, hex: '#f97316' },
+      { name: '黑色', value: 10, hex: '#202529' },
+      { name: '白色', value: 11, hex: '#f7f7f2' }
+    ];
+    const EMPTY_SECTIONS = { conveyor: [], left: [], right: [] };
+    const EMPTY_PARKING = {
+      slots: [null, null, null, null],
+      logs: [],
+      nextVehicleId: 1,
+      savedGames: [],
+      nextGameId: 1,
+      pending: {
+        selectedVehicle: '',
+        enteredSlot: '',
+        departedVehicles: [],
+        occupancyDurations: []
+      }
+    };
+
+    function assert(condition, message) {
+      if (!condition) throw new Error(message);
+    }
+
+    function normalize(value) {
+      if (Array.isArray(value)) {
+        return value.map(normalize);
+      }
+      if (value && typeof value === 'object') {
+        return Object.keys(value).sort().reduce((normalized, key) => {
+          normalized[key] = normalize(value[key]);
+          return normalized;
+        }, {});
+      }
+      return value;
+    }
+
+    function serialize(value) {
+      return JSON.stringify(normalize(value));
+    }
+
+    function clone(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+
+    function withStoredState(value, operation) {
+      const previousValue = localStorage.getItem(STORAGE_KEY);
+      try {
+        if (value === null) {
+          localStorage.removeItem(STORAGE_KEY);
+        } else {
+          localStorage.setItem(STORAGE_KEY, value);
+        }
+        return operation();
+      } finally {
+        if (previousValue === null) {
+          localStorage.removeItem(STORAGE_KEY);
+        } else {
+          localStorage.setItem(STORAGE_KEY, previousValue);
+        }
+      }
+    }
+
+    function restoreOriginalStoredState() {
+      if (originalStoredState === null) {
+        localStorage.removeItem(STORAGE_KEY);
+      } else {
+        localStorage.setItem(STORAGE_KEY, originalStoredState);
+      }
+    }
+
+    window.addEventListener('pagehide', restoreOriginalStoredState);
+
+    function equal(actual, expected, message) {
+      assert(
+        serialize(actual) === serialize(expected),
+        `${message}，期望：${serialize(expected)}，实际：${serialize(actual)}`
+      );
+    }
+
+    function assertPure(label, input, operation) {
+      const inputSnapshot = clone(input);
+      const output = operation();
+      equal(input, inputSnapshot, `${label} 突变了输入状态`);
+      return output;
+    }
+
+    function addResult(kind, name, detail) {
+      const item = document.createElement('li');
+      item.className = kind;
+      item.append(`${kind.toUpperCase()}：${name}`);
+      if (detail) {
+        item.append(document.createElement('br'), detail);
+      }
+      results.append(item);
+    }
+
+    function test(name, fn) {
+      try {
+        fn();
+        passed += 1;
+        addResult('pass', name);
+      } catch (error) {
+        failed += 1;
+        addResult('fail', name, error.message);
+      }
+    }
+
+    function finish() {
+      if (suiteFinished) return;
+      suiteFinished = true;
+      clearTimeout(timeoutId);
+      restoreOriginalStoredState();
+      const status = failed === 0 ? 'pass' : 'fail';
+      document.body.dataset.status = status;
+      document.body.dataset.failures = String(failed);
+      summary.className = status;
+      summary.textContent = `汇总：PASS ${passed} / FAIL ${failed}`;
+    }
+
+    function failSuite(name, error) {
+      if (suiteFinished) return;
+      failed += 1;
+      addResult('fail', name, error instanceof Error ? error.message : String(error));
+      finish();
+    }
+
+    window.addEventListener('error', event => {
+      failSuite('测试页脚本异常', event.error || event.message);
+    });
+
+    window.addEventListener('unhandledrejection', event => {
+      failSuite('测试页 Promise 异常', event.reason);
+    });
+
+    timeoutId = setTimeout(() => {
+      failSuite('测试页执行超时', '生产页面加载回调未在限定时间内完成');
+    }, 3000);
+
+    const appFrame = document.querySelector('#app');
+
+    appFrame.addEventListener('load', () => {
+      if (suiteFinished) return;
+
+      try {
+        const appWindow = appFrame.contentWindow;
+        const appDocument = appWindow.document;
+        const core = appWindow.QueueRecorderCore;
+        const app = appWindow.QueueRecorderApp;
+
+        if (loadPhase === 'restore-right') {
+          test('刷新后恢复 right 阶段、队列色块和乘客数量', () => {
+            assert(app, '刷新后 QueueRecorderApp 不存在');
+            equal(app.getState().activeStage, 'right', '刷新后未恢复 right 阶段');
+            equal(app.getState().queues.right, [3], '刷新后未恢复 right 队列');
+            assert(appDocument.querySelector('.stage-button[data-stage="right"]').classList.contains('is-active'), '刷新后 right 导航未高亮');
+            equal(appDocument.querySelector('.sequence-chip[data-index="0"]').textContent, '3', '刷新后序列色块错误');
+            equal(appDocument.querySelector('.count-card strong').textContent, '1', '刷新后乘客数量错误');
+          });
+
+          if (!app) {
+            finish();
+            return;
+          }
+
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...app.getState(), activeStage: 'configs' }));
+          loadPhase = 'restore-configs';
+          appWindow.location.reload();
+          return;
+        }
+
+        if (loadPhase === 'restore-configs') {
+          test('刷新后恢复 configs 高亮和配置渲染', () => {
+            assert(app, 'configs 刷新后 QueueRecorderApp 不存在');
+            equal(app.getState().activeStage, 'configs', '刷新后未恢复 configs 阶段');
+            assert(appDocument.querySelector('.stage-button[data-stage="configs"]').classList.contains('is-active'), '刷新后 configs 导航未高亮');
+            assert(appDocument.querySelector('[data-config-key="right"] .config-value'), '刷新后 configs 配置卡片缺失');
+            equal(appDocument.querySelector('[data-config-key="right"] .config-value').textContent, '3', '刷新后 configs 右侧配置错误');
+          });
+
+          finish();
+          return;
+        }
+
+        test('页面暴露核心状态 API', () => {
+          assert(core, 'QueueRecorderCore 不存在');
+        });
+
+        if (!core) {
+          finish();
+          return;
+        }
+
+        test('初始状态包含默认颜色、空区域和默认阶段', () => {
+          const state = core.createInitialState();
+          equal(state.colors, DEFAULT_COLORS, '默认颜色错误');
+          equal(state.queues, EMPTY_SECTIONS, '初始队列应为空');
+          equal(state.histories, EMPTY_SECTIONS, '初始撤销历史应为空');
+          equal(state.parking, EMPTY_PARKING, '初始车位记录应为空');
+          equal(state.activeStage, 'conveyor', '初始阶段错误');
+        });
+
+        test('追加、删除和撤销只影响当前区域', () => {
+          let state = core.createInitialState();
+          state = core.appendValue(state, 'left', 3);
+          state = core.appendValue(state, 'right', 2);
+          state = core.appendValue(state, 'conveyor', 1);
+          state = core.appendValue(state, 'conveyor', 2);
+          equal(state.queues, { conveyor: [1, 2], left: [3], right: [2] }, '追加结果错误');
+          state = core.removeAt(state, 'conveyor', 0);
+          equal(state.queues, { conveyor: [2], left: [3], right: [2] }, '删除影响了其他区域');
+          state = core.undo(state, 'conveyor');
+          equal(state.queues, { conveyor: [1, 2], left: [3], right: [2] }, '撤销影响了其他区域');
+        });
+
+        test('删除中间项按索引移除目标乘客', () => {
+          let state = core.createInitialState();
+          state = core.appendValue(state, 'conveyor', 1);
+          state = core.appendValue(state, 'conveyor', 2);
+          state = core.appendValue(state, 'conveyor', 3);
+          state = core.removeAt(state, 'conveyor', 1);
+          equal(state.queues.conveyor, [1, 3], '删除中间项失败');
+        });
+
+        test('连续撤销逐层回退，空历史撤销保持状态不变', () => {
+          let state = core.createInitialState();
+          state = core.appendValue(state, 'left', 1);
+          state = core.appendValue(state, 'left', 2);
+          state = core.appendValue(state, 'left', 3);
+          state = core.undo(state, 'left');
+          equal(state.queues.left, [1, 2], '第一次撤销追加失败');
+          state = core.undo(state, 'left');
+          equal(state.queues.left, [1], '第二次撤销追加失败');
+          state = core.undo(state, 'left');
+          equal(state.queues.left, [], '第三次撤销追加失败');
+          const emptyHistoryState = clone(state);
+          state = core.undo(state, 'left');
+          equal(state, emptyHistoryState, '历史为空时继续撤销不应改变状态');
+        });
+
+        test('三个区域交错编辑后分别撤销，区域历史互相独立', () => {
+          let state = core.createInitialState();
+          state = core.appendValue(state, 'conveyor', 1);
+          state = core.appendValue(state, 'left', 2);
+          state = core.appendValue(state, 'right', 3);
+          state = core.appendValue(state, 'conveyor', 2);
+          state = core.appendValue(state, 'left', 1);
+          state = core.appendValue(state, 'right', 2);
+          state = core.undo(state, 'left');
+          equal(state.queues, { conveyor: [1, 2], left: [2], right: [3, 2] }, '左侧撤销影响了其他区域');
+          state = core.undo(state, 'conveyor');
+          equal(state.queues, { conveyor: [1], left: [2], right: [3, 2] }, '传送带撤销影响了其他区域');
+          state = core.undo(state, 'right');
+          equal(state.queues, { conveyor: [1], left: [2], right: [3] }, '右侧撤销影响了其他区域');
+        });
+
+        test('新增颜色自动使用最大映射值加一', () => {
+          const initialState = core.createInitialState();
+          const stateWithGap = {
+            ...initialState,
+            colors: [...initialState.colors, { name: '映射色 18', hex: '#546e7a', value: 18 }]
+          };
+          const colorsBeforeAdd = clone(stateWithGap.colors);
+          const state = core.addColor(stateWithGap, '  紫色  ', '#8b5cf6');
+          equal(state.colors.at(-1), { name: '紫色', hex: '#8b5cf6', value: 19 }, '新增颜色属性错误');
+          equal(state.colors.slice(0, -1), colorsBeforeAdd, '新增颜色不应修改已有颜色');
+        });
+
+        test('追加只接受已有颜色的正整数映射值', () => {
+          const initialState = core.createInitialState();
+          equal(core.appendValue(initialState, 'left', { value: 1 }), initialState, '对象映射值不应追加');
+          equal(core.appendValue(initialState, 'left', 99), initialState, '未知整数映射值不应追加');
+          equal(core.appendValue(initialState, 'left', 1.5), initialState, '小数映射值不应追加');
+          const unsafeValue = Number.MAX_SAFE_INTEGER + 1;
+          const stateWithUnsafeColor = {
+            ...initialState,
+            colors: [...initialState.colors, { name: '越界色', value: unsafeValue, hex: '#111111' }]
+          };
+          equal(core.appendValue(stateWithUnsafeColor, 'left', unsafeValue), stateWithUnsafeColor, '非安全整数映射值不应追加');
+        });
+
+        test('核心队列操作遇到畸形状态时保持 no-op', () => {
+          const malformedSections = { colors: [], queues: {}, histories: {} };
+          const missingColors = { queues: clone(EMPTY_SECTIONS), histories: clone(EMPTY_SECTIONS) };
+          equal(core.appendValue(null, 'left', 1), null, '空状态追加不应抛异常');
+          equal(core.removeAt(malformedSections, 'left', 0), malformedSections, '畸形状态删除不应抛异常');
+          equal(core.undo(malformedSections, 'left'), malformedSections, '畸形状态撤销不应抛异常');
+          equal(core.appendValue(missingColors, 'left', 1), missingColors, '缺少颜色列表时追加不应抛异常');
+        });
+
+        test('新增颜色拒绝非法名称和非法 hex', () => {
+          const initialState = core.createInitialState();
+          equal(core.addColor(initialState, null, '#32a852'), initialState, '非字符串名称不应新增颜色');
+          equal(core.addColor(initialState, '   ', '#32a852'), initialState, '空名称不应新增颜色');
+          equal(core.addColor(initialState, '绿色', '#xyzxyz'), initialState, '非法 hex 不应新增颜色');
+        });
+
+        test('映射值达到安全整数上限时不再新增颜色', () => {
+          const initialState = core.createInitialState();
+          const stateAtLimit = {
+            ...initialState,
+            colors: [...initialState.colors, { name: '极限色', value: Number.MAX_SAFE_INTEGER, hex: '#111111' }]
+          };
+          equal(core.addColor(stateAtLimit, '越界色', '#222222'), stateAtLimit, '达到安全整数上限后不应新增颜色');
+        });
+
+        test('整体配置按传送带、左侧、右侧顺序拼接', () => {
+          let state = core.createInitialState();
+          state = core.appendValue(state, 'left', 2);
+          state = core.appendValue(state, 'right', 3);
+          state = core.appendValue(state, 'conveyor', 1);
+          equal(
+            core.getConfigs(state),
+            { conveyor: '1', left: '2', right: '3', combined: '1,2,3' },
+            '配置输出错误'
+          );
+          equal(
+            core.getConfigs(core.createInitialState()),
+            { conveyor: '', left: '', right: '', combined: '' },
+            '空区域配置应输出空字符串'
+          );
+        });
+
+        test('开始下一关保留颜色并清空队列', () => {
+          let state = core.addColor(core.createInitialState(), '绿色', '#32a852');
+          state = core.appendValue(state, 'conveyor', 1);
+          state = core.appendValue(state, 'left', 2);
+          state = core.appendValue(state, 'right', 4);
+          state = { ...state, activeStage: 'right' };
+          const colorsBeforeNextLevel = clone(state.colors);
+          state = core.startNextLevel(state);
+          equal(state.colors, colorsBeforeNextLevel, '颜色列表未完整保留');
+          equal(state.queues, EMPTY_SECTIONS, '队列未清空');
+          equal(state.histories, EMPTY_SECTIONS, '撤销历史未清空');
+          equal(state.activeStage, 'conveyor', '下一关应恢复到传送带阶段');
+        });
+
+        test('彻底重置恢复默认颜色和空队列', () => {
+          let state = core.addColor(core.createInitialState(), '绿色', '#32a852');
+          state = core.appendValue(state, 'left', 4);
+          state = { ...state, activeStage: 'right' };
+          state = core.resetEverything();
+          equal(state.colors, DEFAULT_COLORS, '默认颜色未恢复');
+          equal(state.queues, EMPTY_SECTIONS, '队列未清空');
+          equal(state.histories, EMPTY_SECTIONS, '撤销历史未清空');
+          equal(state.parking, EMPTY_PARKING, '车位记录未清空');
+          equal(state.activeStage, 'conveyor', '彻底重置应恢复到传送带阶段');
+        });
+
+        test('车位记录按最靠左空位进车并支持修正剩余座位', () => {
+          let state = core.createInitialState();
+          state = core.addVehicle(state, 1, 4);
+          equal(state.parking.slots[0], { id: 1, colorValue: 1, capacity: 4, remaining: 4, enteredStep: 1 }, '首辆车应进入 1 号位');
+          equal(state.parking.nextVehicleId, 2, '车辆 id 未递增');
+          state = core.updateVehicleRemaining(state, 0, 2);
+          equal(state.parking.slots[0].remaining, 2, '剩余座位未更新');
+          state = core.addVehicle(state, 3, 6);
+          equal(state.parking.slots[1], { id: 2, colorValue: 3, capacity: 6, remaining: 6, enteredStep: 1 }, '第二辆车应进入 2 号位');
+        });
+
+        test('车位记录支持开走车辆后复用最靠左空位', () => {
+          let state = core.createInitialState();
+          state = core.addVehicle(state, 1, 4);
+          state = core.addVehicle(state, 2, 6);
+          state = core.departVehicle(state, 0);
+          equal(state.parking.slots, [null, { id: 2, colorValue: 2, capacity: 6, remaining: 6, enteredStep: 1 }, null, null], '开走车辆后车位状态错误');
+          state = core.addVehicle(state, 3, 10);
+          equal(state.parking.slots[0], { id: 3, colorValue: 3, capacity: 10, remaining: 10, enteredStep: 1 }, '新车应复用 1 号空位');
+        });
+
+        test('车位记录生成飞书可粘贴详细日志', () => {
+          let state = core.createInitialState();
+          state = core.addVehicle(state, 1, 4);
+          state = core.updateVehicleRemaining(state, 0, 2);
+          state = core.recordParkingStep(state, '红车先吃 2 人');
+          state = core.addVehicle(state, 3, 6);
+          state = core.departVehicle(state, 0);
+          state = core.updateVehicleRemaining(state, 1, 5);
+          state = core.recordParkingStep(state, '');
+
+          equal(state.parking.logs.length, 2, '日志数量错误');
+          equal(state.parking.logs[0].selectedVehicle, '红色4', '第一步选择车辆错误');
+          equal(state.parking.logs[0].enteredSlot, '1', '第一步进入车位错误');
+          equal(state.parking.logs[1].departedVehicles, '红色4', '开走车辆记录错误');
+          equal(state.parking.logs[1].occupancyDurations, '红色4：1→2，共2步', '占位时长记录错误');
+          equal(
+            core.getParkingLogText(state).split('\n'),
+            [
+              '步骤\t选择车辆\t进入车位\t1号车位\t2号车位\t3号车位\t4号车位\t开走车辆\t占位时长\t备注',
+              '1\t红色4\t1\t红色4剩2\t空\t空\t空\t\t\t红车先吃 2 人',
+              '2\t蓝色6\t2\t空\t蓝色6剩5\t空\t空\t红色4\t红色4：1→2，共2步\t'
+            ],
+            '导出日志错误'
+          );
+        });
+
+        test('跨多步开走车辆时记录占用车位步数', () => {
+          let state = core.createInitialState();
+          state = core.addVehicle(state, 1, 4);
+          state = core.recordParkingStep(state, '红4进场');
+          state = core.addVehicle(state, 2, 4);
+          state = core.recordParkingStep(state, '第二步');
+          state = core.updateVehicleRemaining(state, 1, 1);
+          state = core.recordParkingStep(state, '第三步');
+          state = core.addVehicle(state, 3, 6);
+          state = core.recordParkingStep(state, '第四步');
+          state = core.departVehicle(state, 0);
+          state = core.recordParkingStep(state, '红4开走');
+          equal(state.parking.logs[4].departedVehicles, '红色4', '第 5 步开走车辆记录错误');
+          equal(state.parking.logs[4].occupancyDurations, '红色4：1→5，共5步', '跨步骤占位时长错误');
+        });
+
+        test('车位记录支持保存、加载和删除单局记录', () => {
+          let state = core.createInitialState();
+          state = core.addVehicle(state, 1, 4);
+          state = core.updateVehicleRemaining(state, 0, 2);
+          state = core.recordParkingStep(state, '第一局');
+          state = core.saveParkingGame(state, '1', '2');
+          equal(state.parking.savedGames.length, 1, '单局记录未保存');
+          equal(state.parking.savedGames[0].name, '第1关第2局', '单局记录名称错误');
+          equal(state.parking.savedGames[0].logs[0].slots[0], '红色4剩2', '单局日志快照错误');
+          equal(state.parking.nextGameId, 2, '单局 id 未递增');
+
+          state = core.clearParking(state);
+          equal(state.parking.savedGames.length, 1, '清空当前车位不应删除已保存单局');
+          state = core.loadParkingGame(state, 1);
+          equal(state.parking.logs[0].note, '第一局', '加载单局记录失败');
+          equal(core.getSavedParkingGameText(state, 1).split('\n')[1], '1\t红色4\t1\t红色4剩2\t空\t空\t空\t\t\t第一局', '已保存单局导出错误');
+          state = core.deleteParkingGame(state, 1);
+          equal(state.parking.savedGames, [], '删除单局记录失败');
+        });
+
+        test('核心状态操作不突变输入状态', () => {
+          const appendInput = core.createInitialState();
+          assertPure('appendValue()', appendInput, () => core.appendValue(appendInput, 'conveyor', 1));
+
+          let removeInput = core.createInitialState();
+          removeInput = core.appendValue(removeInput, 'conveyor', 1);
+          removeInput = core.appendValue(removeInput, 'conveyor', 2);
+          assertPure('removeAt()', removeInput, () => core.removeAt(removeInput, 'conveyor', 1));
+
+          let undoInput = core.createInitialState();
+          undoInput = core.appendValue(undoInput, 'left', 1);
+          undoInput = core.appendValue(undoInput, 'left', 2);
+          assertPure('undo()', undoInput, () => core.undo(undoInput, 'left'));
+
+          const addColorInput = core.createInitialState();
+          assertPure('addColor()', addColorInput, () => core.addColor(addColorInput, '绿色', '#32a852'));
+
+          let nextLevelInput = core.createInitialState();
+          nextLevelInput = core.appendValue(nextLevelInput, 'right', 3);
+          nextLevelInput = { ...nextLevelInput, activeStage: 'right' };
+          assertPure('startNextLevel()', nextLevelInput, () => core.startNextLevel(nextLevelInput));
+
+          let configsInput = core.createInitialState();
+          configsInput = core.appendValue(configsInput, 'conveyor', 1);
+          configsInput = core.appendValue(configsInput, 'left', 2);
+          configsInput = core.appendValue(configsInput, 'right', 3);
+          equal(
+            assertPure('getConfigs()', configsInput, () => core.getConfigs(configsInput)),
+            { conveyor: '1', left: '2', right: '3', combined: '1,2,3' },
+            'getConfigs() 返回配置错误'
+          );
+        });
+
+        test('本地恢复允许配置阶段 configs', () => {
+          const storedState = { ...core.createInitialState(), activeStage: 'configs' };
+          const loadedState = withStoredState(JSON.stringify(storedState), () => core.loadState());
+          equal(loadedState, storedState, 'configs 阶段应可恢复');
+        });
+
+        test('本地恢复遇到损坏或非法状态时回退初始状态', () => {
+          const initialState = core.createInitialState();
+          const invalidStates = [
+            '{bad json',
+            JSON.stringify({ colors: [] }),
+            JSON.stringify({ ...initialState, colors: [] }),
+            JSON.stringify({ ...initialState, colors: [{ name: '   ', value: 1, hex: '#3478f6' }] }),
+            JSON.stringify({ ...initialState, colors: [{ name: '蓝色', value: 1, hex: '#xyzxyz' }] }),
+            JSON.stringify({ ...initialState, colors: [{ name: '蓝色', value: 1, hex: '#3478f6' }, { name: '红色', value: 1, hex: '#e54c4c' }] }),
+            JSON.stringify({ ...initialState, colors: [{ name: '蓝色', value: 0, hex: '#3478f6' }] }),
+            JSON.stringify({ ...initialState, colors: [{ name: '蓝色', value: 1.5, hex: '#3478f6' }] }),
+            JSON.stringify({ ...initialState, colors: [{ name: '越界色', value: Number.MAX_SAFE_INTEGER + 1, hex: '#111111' }] }),
+            JSON.stringify({ ...initialState, queues: { ...initialState.queues, left: [99] } }),
+            JSON.stringify({ ...initialState, histories: { ...initialState.histories, right: [[99]] } }),
+            JSON.stringify({ ...initialState, activeStage: 'unknown' }),
+            JSON.stringify({ ...initialState, polluted: true }),
+            JSON.stringify({ ...initialState, queues: { ...initialState.queues, polluted: [] } }),
+            JSON.stringify({ ...initialState, histories: { ...initialState.histories, polluted: [] } }),
+            JSON.stringify({
+              ...initialState,
+              colors: initialState.colors.map((color, index) => index === 0 ? { ...color, polluted: true } : color)
+            })
+          ];
+
+          invalidStates.forEach(invalidState => {
+            equal(
+              withStoredState(invalidState, () => core.loadState()),
+              initialState,
+              `非法本地状态应回退：${invalidState}`
+            );
+          });
+        });
+
+        test('保存状态支持显式状态并拒绝非法状态', () => {
+          const validState = {
+            ...core.appendValue(core.createInitialState(), 'left', 2),
+            activeStage: 'configs'
+          };
+          const invalidState = { ...validState, queues: { ...validState.queues, left: [99] } };
+
+          withStoredState(null, () => {
+            equal(core.saveState(), false, '未传入状态时应保存失败');
+            equal(localStorage.getItem(STORAGE_KEY), null, '未传入状态时不应写入存储');
+            equal(core.saveState(validState), true, '合法显式状态应保存成功');
+            equal(JSON.parse(localStorage.getItem(STORAGE_KEY)), validState, '显式状态保存内容错误');
+            equal(core.saveState(invalidState), false, '非法状态应保存失败');
+            equal(JSON.parse(localStorage.getItem(STORAGE_KEY)), validState, '非法状态不应覆盖已有存储');
+          });
+        });
+
+        test('本地恢复和保存拒绝稀疏数组', () => {
+          const initialState = core.createInitialState();
+          const sparseQueueWithExtraField = Array(1);
+          sparseQueueWithExtraField.polluted = true;
+          const sparseStates = [
+            {
+              label: '稀疏 colors',
+              state: { ...initialState, colors: Array(1) }
+            },
+            {
+              label: '稀疏 queues',
+              state: { ...initialState, queues: { ...initialState.queues, left: Array(1) } }
+            },
+            {
+              label: '稀疏 histories 外层',
+              state: { ...initialState, histories: { ...initialState.histories, left: Array(1) } }
+            },
+            {
+              label: '稀疏 histories 内层',
+              state: { ...initialState, histories: { ...initialState.histories, left: [Array(1)] } }
+            },
+            {
+              label: '带额外属性的稀疏 queues',
+              state: { ...initialState, queues: { ...initialState.queues, left: sparseQueueWithExtraField } }
+            }
+          ];
+
+          sparseStates.forEach(({ label, state }) => {
+            equal(
+              withStoredState(JSON.stringify(state), () => core.loadState()),
+              initialState,
+              `${label} 恢复时应回退初始状态`
+            );
+
+            withStoredState(null, () => {
+              equal(core.saveState(state), false, `${label} 不应保存`);
+              equal(localStorage.getItem(STORAGE_KEY), null, `${label} 不应写入存储`);
+            });
+          });
+        });
+
+        test('工作台包含五阶段导航、viewport 和保存反馈状态区域', () => {
+          assert(app, 'QueueRecorderApp 不存在');
+          const stageButtons = [...appDocument.querySelectorAll('.stage-button[data-stage]')];
+          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'parking'], '五个导航按钮错误');
+          equal(app.getState().activeStage, 'conveyor', '初始活动阶段应为 conveyor');
+          assert(appDocument.querySelector('.stage-button[data-stage="conveyor"]').classList.contains('is-active'), 'conveyor 导航未高亮');
+          assert(appDocument.querySelector('meta[name="viewport"][content="width=device-width, initial-scale=1"]'), 'viewport meta 缺失');
+          assert(appDocument.querySelector('#saveState[role="status"][aria-live="polite"]'), '保存反馈 ARIA 状态区域缺失');
+        });
+
+        test('普通按钮获得焦点后数字键仍追加，Ctrl+Z 仍撤销', () => {
+          const blueButton = appDocument.querySelector('.color-button[data-value="1"]');
+          blueButton.click();
+          const redButton = appDocument.querySelector('.color-button[data-value="2"]');
+          redButton.focus();
+          redButton.dispatchEvent(new appWindow.KeyboardEvent('keydown', { key: '2', bubbles: true }));
+          equal(app.getState().queues.conveyor, [1, 2], '颜色按钮焦点下数字键未追加');
+          const undoButton = appDocument.querySelector('[data-action="undo"]');
+          undoButton.focus();
+          undoButton.dispatchEvent(new appWindow.KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+          equal(app.getState().queues.conveyor, [1], '普通按钮焦点下 Ctrl+Z 未撤销');
+          appDocument.querySelector('.color-button[data-value="2"]').click();
+          equal(JSON.parse(localStorage.getItem(STORAGE_KEY)).queues.conveyor, [1, 2], '录入状态未保存');
+        });
+
+        test('点击序列色块删除，Ctrl+Z 恢复最近操作', () => {
+          appDocument.querySelector('.sequence-chip[data-index="0"]').click();
+          equal(app.getState().queues.conveyor, [2], '点击序列色块未按索引删除');
+          appDocument.dispatchEvent(new appWindow.KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+          equal(app.getState().queues.conveyor, [1, 2], 'Ctrl+Z 未恢复最近操作');
+        });
+
+        test('dialog 打开期间禁用后台快捷键', () => {
+          const queueBeforeDialog = clone(app.getState().queues.conveyor);
+          appDocument.querySelector('[data-action="add-color"]').click();
+          const dialog = appDocument.querySelector('#addColorDialog');
+          const cancelButton = dialog.querySelector('[data-action="cancel-color"]');
+          const submitButton = dialog.querySelector('button[type="submit"]');
+          cancelButton.focus();
+          cancelButton.dispatchEvent(new appWindow.KeyboardEvent('keydown', { key: '3', bubbles: true }));
+          equal(app.getState().queues.conveyor, queueBeforeDialog, 'dialog 打开时数字键不应追加');
+          submitButton.focus();
+          submitButton.dispatchEvent(new appWindow.KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+          equal(app.getState().queues.conveyor, queueBeforeDialog, 'dialog 打开时 Ctrl+Z 不应撤销后台队列');
+          dialog.close();
+        });
+
+        test('下一步与导航跳转更新阶段并保存', () => {
+          appDocument.querySelector('[data-action="next"]').click();
+          equal(app.getState().activeStage, 'left', '下一步未进入 left');
+          appDocument.querySelector('.stage-button[data-stage="right"]').click();
+          equal(app.getState().activeStage, 'right', '导航未跳转到 right');
+          equal(JSON.parse(localStorage.getItem(STORAGE_KEY)).activeStage, 'right', '导航跳转状态未保存');
+        });
+
+        test('新增颜色弹窗校验空名称并渲染新增按钮', () => {
+          appDocument.querySelector('[data-action="add-color"]').click();
+          const dialog = appDocument.querySelector('#addColorDialog');
+          const form = dialog.querySelector('form');
+          const nameInput = appDocument.querySelector('#colorName');
+          const hexInput = appDocument.querySelector('#colorHex');
+          const error = appDocument.querySelector('#colorError');
+          assert(dialog.open, '新增颜色弹窗未打开');
+          form.dispatchEvent(new appWindow.Event('submit', { bubbles: true, cancelable: true }));
+          assert(dialog.open, '空名称提交后弹窗不应关闭');
+          assert(error.textContent.trim() !== '', '空名称提交后未显示错误');
+          nameInput.value = ' 灰色 ';
+          hexInput.value = '#808080';
+          form.dispatchEvent(new appWindow.Event('submit', { bubbles: true, cancelable: true }));
+          assert(!dialog.open, '合法颜色提交后弹窗未关闭');
+          assert(appDocument.querySelector('.color-button[data-value="12"]'), '新增映射值 12 的按钮不存在');
+        });
+
+        test('输入焦点和 configs 阶段忽略数字快捷键', () => {
+          appDocument.querySelector('[data-action="add-color"]').click();
+          const dialog = appDocument.querySelector('#addColorDialog');
+          const nameInput = appDocument.querySelector('#colorName');
+          nameInput.focus();
+          nameInput.dispatchEvent(new appWindow.KeyboardEvent('keydown', { key: '2', bubbles: true }));
+          equal(app.getState().queues.right, [], '输入焦点下数字键不应追加');
+          dialog.close();
+          appDocument.querySelector('.stage-button[data-stage="configs"]').click();
+          appDocument.dispatchEvent(new appWindow.KeyboardEvent('keydown', { key: '2', bubbles: true }));
+          equal(app.getState().queues.right, [], 'configs 阶段数字键不应追加');
+        });
+
+        test('映射值超过 9 时提示改为鼠标点击', () => {
+          let stateWithTenColors = { ...app.getState(), activeStage: 'right' };
+          for (let value = 13; value <= 14; value += 1) {
+            stateWithTenColors = core.addColor(stateWithTenColors, `映射色 ${value}`, '#546e7a');
+          }
+          app.updateState(stateWithTenColors);
+          equal(appDocument.querySelector('.color-button[data-value="9"] small').textContent, '数字键 9', '映射值 9 的快捷键提示错误');
+          equal(appDocument.querySelector('.color-button[data-value="10"] small').textContent, '映射值 10（鼠标点击）', '映射值 10 不应显示数字键提示');
+        });
+
+        test('配置页生成四份可单独复制的逗号分隔配置', () => {
+          let outputState = core.createInitialState();
+          outputState = core.appendValue(outputState, 'conveyor', 1);
+          outputState = core.appendValue(outputState, 'conveyor', 2);
+          outputState = core.appendValue(outputState, 'left', 3);
+          outputState = core.appendValue(outputState, 'right', 1);
+          app.updateState({ ...outputState, activeStage: 'configs' });
+
+          equal(appDocument.querySelector('[data-config-key="conveyor"] .config-value').textContent, '1,2', '传送带配置错误');
+          equal(appDocument.querySelector('[data-config-key="left"] .config-value').textContent, '3', '左侧配置错误');
+          equal(appDocument.querySelector('[data-config-key="right"] .config-value').textContent, '1', '右侧配置错误');
+          equal(appDocument.querySelector('[data-config-key="combined"] .config-value').textContent, '1,2,3,1', '整体配置错误');
+          equal(appDocument.querySelectorAll('[data-action="copy-config"]').length, 4, '每份配置都应有独立复制按钮');
+        });
+
+        test('开始下一关清空队列但保留颜色映射', () => {
+          const mappingBeforeNextLevel = clone(app.getState().colors);
+          appDocument.querySelector('[data-action="next-level"]').click();
+          equal(app.getState().queues, { conveyor: [], left: [], right: [] }, '下一关未清空三段队列');
+          equal(app.getState().histories, { conveyor: [], left: [], right: [] }, '下一关未清空撤销记录');
+          equal(app.getState().colors, mappingBeforeNextLevel, '下一关不应清空颜色映射');
+          equal(app.getState().activeStage, 'conveyor', '下一关应回到传送带');
+        });
+
+        test('彻底重置需要确认并恢复默认状态', () => {
+          let customState = core.addColor(core.createInitialState(), '绿色', '#32a852');
+          customState = core.appendValue(customState, 'left', 4);
+          app.updateState({ ...customState, activeStage: 'configs' });
+          const originalConfirm = appWindow.confirm;
+          appWindow.confirm = () => false;
+          appDocument.querySelector('[data-action="reset-everything"]').click();
+          equal(app.getState().queues.left, [4], '取消确认后不应重置');
+          appWindow.confirm = () => true;
+          appDocument.querySelector('[data-action="reset-everything"]').click();
+          equal(app.getState(), core.createInitialState(), '确认后未恢复默认状态');
+          appWindow.confirm = originalConfirm;
+        });
+
+        test('车位记录页面支持选择车辆、修正座位和记录日志', () => {
+          appDocument.querySelector('.stage-button[data-stage="parking"]').click();
+          equal(app.getState().activeStage, 'parking', '未进入车位记录页面');
+          assert(!appDocument.querySelector('#parkingColor'), '车位记录不应再使用颜色下拉框');
+          appDocument.querySelector('[data-action="add-vehicle"][data-color-value="1"][data-capacity="4"]').click();
+          equal(app.getState().parking.slots[0].remaining, 4, '车辆未进入 1 号位');
+          const occupiedSlot = appDocument.querySelector('.parking-slot[data-slot-index="0"]');
+          assert(occupiedSlot.style.getPropertyValue('--slot-color'), '车位未显示车辆颜色');
+          assert(occupiedSlot.classList.contains('is-occupied'), '占用车位缺少 occupied 状态');
+          const remainingInput = appDocument.querySelector('.remaining-input[data-slot-index="0"]');
+          remainingInput.value = '2';
+          remainingInput.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+          equal(app.getState().parking.slots[0].remaining, 2, '剩余座位未通过页面更新');
+          appDocument.querySelector('#parkingNote').value = '页面记录';
+          appDocument.querySelector('[data-action="record-parking-step"]').click();
+          equal(app.getState().parking.logs[0].slots[0], '红色4剩2', '页面日志车位状态错误');
+          assert(appDocument.querySelector('.parking-log-table').textContent.includes('页面记录'), '页面日志未渲染备注');
+          appDocument.querySelector('#parkingLevelNumber').value = '3';
+          appDocument.querySelector('#parkingAttemptNumber').value = '2';
+          appDocument.querySelector('[data-action="save-parking-game"]').click();
+          equal(app.getState().parking.savedGames[0].name, '第3关第2局', '页面未保存关卡局次名称');
+          assert(appDocument.querySelector('.saved-game-list').textContent.includes('第3关第2局'), '已保存单局列表未渲染');
+        });
+
+        const restoreRightState = {
+          ...core.appendValue(core.createInitialState(), 'right', 3),
+          activeStage: 'right'
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(restoreRightState));
+        loadPhase = 'restore-right';
+        appWindow.location.reload();
+      } catch (error) {
+        failSuite('测试页脚本异常', error);
+      }
+    });
+
+    localStorage.removeItem(STORAGE_KEY);
+    appFrame.src = '../index.html';
+  </script>
+</body>
+</html>

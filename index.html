@@ -1,0 +1,2228 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>乘客队列记录工具</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172126;
+      --muted: #65757d;
+      --paper: #f3f1e9;
+      --panel: #fffdf7;
+      --line: #c9cec8;
+      --rail: #1e2b30;
+      --rail-soft: #2d3c41;
+      --signal: #f2bd43;
+      --signal-dark: #785610;
+      --ok: #39775d;
+      --danger: #b4483f;
+      --shadow: 0 14px 30px rgba(31, 43, 48, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background-color: var(--paper);
+      background-image:
+        linear-gradient(rgba(44, 61, 66, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(44, 61, 66, 0.055) 1px, transparent 1px);
+      background-size: 22px 22px;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 3px solid var(--signal);
+      outline-offset: 3px;
+    }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: 252px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      padding: 24px 18px 18px;
+      color: #f4f1e7;
+      background: var(--rail);
+      border-right: 4px solid var(--signal);
+    }
+
+    .brand-kicker,
+    .eyebrow,
+    .stage-code,
+    .panel-label {
+      margin: 0;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .brand-kicker {
+      color: var(--signal);
+    }
+
+    .brand-title {
+      margin: 8px 0 0;
+      font-size: 23px;
+      line-height: 1.18;
+      letter-spacing: 0.04em;
+    }
+
+    .brand-subtitle {
+      margin: 12px 0 0;
+      color: #bec9c6;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    #stageNav {
+      display: grid;
+      gap: 8px;
+      margin-top: 34px;
+    }
+
+    .stage-button {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 10px;
+      align-items: center;
+      min-height: 58px;
+      padding: 10px;
+      color: #d9e0de;
+      text-align: left;
+      background: transparent;
+      border: 1px solid rgba(222, 231, 228, 0.18);
+      border-radius: 4px;
+      transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+    }
+
+    .stage-button:hover {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(242, 189, 67, 0.54);
+      transform: translateX(2px);
+    }
+
+    .stage-button.is-active {
+      color: #172126;
+      background: var(--signal);
+      border-color: var(--signal);
+    }
+
+    .stage-index {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 900;
+      border: 1px solid currentColor;
+      border-radius: 50%;
+    }
+
+    .stage-name {
+      display: block;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+    }
+
+    .stage-code {
+      display: block;
+      margin-top: 3px;
+      color: inherit;
+      opacity: 0.62;
+      font-size: 9px;
+    }
+
+    .save-panel {
+      margin-top: auto;
+      padding-top: 18px;
+      border-top: 1px solid rgba(222, 231, 228, 0.2);
+    }
+
+    #saveState {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 0;
+      color: #d1dcda;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    #saveState::before {
+      width: 9px;
+      height: 9px;
+      content: "";
+      background: var(--signal);
+      border-radius: 50%;
+      box-shadow: 0 0 0 3px rgba(242, 189, 67, 0.16);
+    }
+
+    #saveState.is-saved::before {
+      background: #7bcba4;
+      box-shadow: 0 0 0 3px rgba(123, 203, 164, 0.16);
+    }
+
+    #saveState.is-error::before {
+      background: #ef766c;
+      box-shadow: 0 0 0 3px rgba(239, 118, 108, 0.16);
+    }
+
+    .workspace {
+      width: min(1180px, 100%);
+      padding: 34px 38px 42px;
+    }
+
+    .workspace-header {
+      display: flex;
+      gap: 24px;
+      align-items: end;
+      justify-content: space-between;
+      padding-bottom: 18px;
+      border-bottom: 2px solid var(--ink);
+    }
+
+    .eyebrow,
+    .panel-label {
+      color: var(--signal-dark);
+    }
+
+    .workspace-title {
+      margin: 7px 0 0;
+      font-size: clamp(29px, 4vw, 44px);
+      line-height: 1;
+      letter-spacing: 0.03em;
+    }
+
+    .count-card {
+      min-width: 126px;
+      padding: 12px 16px;
+      text-align: right;
+      background: var(--ink);
+      color: #fffdf7;
+      border-radius: 3px;
+      box-shadow: 5px 5px 0 rgba(242, 189, 67, 0.72);
+    }
+
+    .count-card span {
+      display: block;
+      color: #bdcac8;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+    }
+
+    .count-card strong {
+      display: block;
+      margin-top: 2px;
+      font-size: 34px;
+      line-height: 1;
+    }
+
+    .work-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 280px;
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .panel {
+      background: rgba(255, 253, 247, 0.94);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      box-shadow: var(--shadow);
+    }
+
+    .input-panel {
+      padding: 20px;
+    }
+
+    .help-panel {
+      padding: 18px;
+      background: #e8ece7;
+      box-shadow: none;
+    }
+
+    .help-panel h2,
+    .sequence-panel h2 {
+      margin: 7px 0 0;
+      font-size: 17px;
+    }
+
+    .help-panel p {
+      margin: 12px 0 0;
+      color: #56666c;
+      font-size: 13px;
+      line-height: 1.8;
+    }
+
+    .key-list {
+      display: grid;
+      gap: 9px;
+      margin-top: 16px;
+    }
+
+    .key-line {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      color: #46555b;
+      font-size: 12px;
+    }
+
+    kbd {
+      min-width: 30px;
+      padding: 4px 6px;
+      color: #fffdf7;
+      text-align: center;
+      background: var(--rail);
+      border: 1px solid #66777b;
+      border-bottom-width: 3px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .color-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .color-button,
+    .add-color-button {
+      min-height: 88px;
+      padding: 12px 14px;
+      text-align: left;
+      border: 2px solid rgba(23, 33, 38, 0.48);
+      border-radius: 4px;
+      box-shadow: 0 4px 0 rgba(23, 33, 38, 0.18);
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+
+    .color-button:hover,
+    .add-color-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 0 rgba(23, 33, 38, 0.18);
+    }
+
+    .color-button:active,
+    .add-color-button:active {
+      transform: translateY(2px);
+      box-shadow: 0 2px 0 rgba(23, 33, 38, 0.18);
+    }
+
+    .color-button {
+      color: #fff;
+      background: var(--button-color);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.36);
+    }
+
+    .color-button.uses-dark-text,
+    .sequence-chip.uses-dark-text {
+      color: var(--ink);
+      text-shadow: none;
+    }
+
+    .color-button span,
+    .add-color-button span {
+      display: block;
+      font-size: 20px;
+      font-weight: 900;
+      letter-spacing: 0.06em;
+    }
+
+    .color-button small,
+    .add-color-button small {
+      display: block;
+      margin-top: 7px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.09em;
+    }
+
+    .add-color-button {
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(242, 189, 67, 0.22) 25%, transparent 25%) -8px 0 / 16px 16px,
+        linear-gradient(225deg, rgba(242, 189, 67, 0.22) 25%, transparent 25%) -8px 0 / 16px 16px,
+        #fff9e8;
+      border-style: dashed;
+    }
+
+    .sequence-panel {
+      margin-top: 18px;
+      padding: 20px;
+    }
+
+    .sequence-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      min-height: 74px;
+      margin-top: 16px;
+      padding: 12px;
+      background: #edf0eb;
+      border: 1px dashed #9da8a4;
+      border-radius: 4px;
+    }
+
+    .sequence-chip {
+      display: grid;
+      width: 54px;
+      height: 54px;
+      place-items: center;
+      color: #fff;
+      background: var(--chip-color);
+      border: 3px solid #fff;
+      border-radius: 50%;
+      box-shadow: 0 0 0 2px var(--ink), 0 4px 0 rgba(23, 33, 38, 0.22);
+      font-size: 15px;
+      font-weight: 900;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.46);
+      transition: transform 120ms ease;
+    }
+
+    .sequence-chip:hover {
+      transform: translateY(-3px) scale(1.04);
+    }
+
+    .empty-sequence {
+      align-self: center;
+      margin: 0;
+      color: #718087;
+      font-size: 13px;
+    }
+
+    .action-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: space-between;
+      margin-top: 18px;
+    }
+
+    .action-button {
+      min-height: 46px;
+      padding: 0 18px;
+      border: 1px solid var(--ink);
+      border-radius: 3px;
+      font-size: 14px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+    }
+
+    .action-button.secondary {
+      color: var(--ink);
+      background: #fffdf7;
+    }
+
+    .action-button.primary {
+      color: #fff;
+      background: var(--ink);
+    }
+
+    .action-button:disabled {
+      cursor: not-allowed;
+      opacity: 0.42;
+    }
+
+    .config-output {
+      max-width: 1080px;
+      padding: 28px;
+      background: rgba(255, 253, 247, 0.94);
+      border: 1px solid var(--line);
+      border-left: 7px solid var(--signal);
+      box-shadow: var(--shadow);
+    }
+
+    .config-output h1 {
+      margin: 8px 0 0;
+      font-size: clamp(28px, 4vw, 42px);
+    }
+
+    .config-output > p {
+      margin: 17px 0 0;
+      color: var(--muted);
+      line-height: 1.8;
+    }
+
+    .config-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      margin-top: 24px;
+      overflow: hidden;
+      background: var(--line);
+      border: 1px solid var(--line);
+    }
+
+    .config-stat {
+      padding: 14px;
+      background: #f8f5ed;
+    }
+
+    .config-stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .config-stat strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 24px;
+    }
+
+    .config-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 20px;
+    }
+
+    .config-card {
+      padding: 16px;
+      background: #fffdf7;
+      border: 1px solid var(--line);
+      border-top: 5px solid var(--rail);
+    }
+
+    .config-card-header,
+    .config-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .config-card h2 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .config-count {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .config-value {
+      min-height: 57px;
+      margin: 14px 0;
+      padding: 12px;
+      overflow-wrap: anywhere;
+      color: #f7f4e9;
+      background: var(--ink);
+      border: 1px solid #0e171b;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .copy-button {
+      min-height: 38px;
+      padding: 0 14px;
+      color: #fff;
+      background: var(--rail);
+      border: 1px solid var(--ink);
+      border-radius: 3px;
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .config-footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: space-between;
+      margin-top: 22px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .action-button.danger {
+      color: #fff;
+      background: #9c2f2f;
+      border-color: #6f2020;
+    }
+
+    .parking-page {
+      display: grid;
+      gap: 18px;
+    }
+
+    .parking-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .parking-slot {
+      min-height: 184px;
+      padding: 16px;
+      background: #fffdf7;
+      border: 1px solid var(--line);
+      border-top: 6px solid var(--rail);
+      box-shadow: 0 5px 0 rgba(23, 33, 38, 0.12);
+    }
+
+    .parking-slot.is-occupied {
+      color: #fff;
+      background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0)),
+        var(--slot-color);
+      border-color: rgba(23, 33, 38, 0.52);
+      border-top-color: var(--ink);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.36);
+    }
+
+    .parking-slot.is-occupied.uses-dark-text {
+      color: var(--ink);
+      text-shadow: none;
+    }
+
+    .parking-slot.is-empty {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      background: #f2efe6;
+      border-style: dashed;
+    }
+
+    .parking-slot h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .parking-slot.is-occupied .slot-label,
+    .parking-slot.is-occupied .remaining-field {
+      color: inherit;
+    }
+
+    .slot-label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+    }
+
+    .parking-controls {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) 2fr;
+      gap: 14px;
+      align-items: end;
+    }
+
+    .vehicle-pick-grid,
+    .saved-game-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .vehicle-pick-grid {
+      grid-template-columns: repeat(auto-fit, minmax(156px, 1fr));
+    }
+
+    .vehicle-pick-card {
+      padding: 12px;
+      color: #fff;
+      background: var(--vehicle-color);
+      border: 2px solid rgba(23, 33, 38, 0.42);
+      border-radius: 4px;
+      box-shadow: 0 4px 0 rgba(23, 33, 38, 0.18);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.36);
+    }
+
+    .vehicle-pick-card.uses-dark-text {
+      color: var(--ink);
+      text-shadow: none;
+    }
+
+    .vehicle-pick-card strong {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 18px;
+      letter-spacing: 0.05em;
+    }
+
+    .vehicle-capacity-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .vehicle-capacity-button {
+      min-height: 36px;
+      color: var(--ink);
+      background: rgba(255, 253, 247, 0.92);
+      border: 1px solid rgba(23, 33, 38, 0.44);
+      border-radius: 3px;
+      font-weight: 900;
+    }
+
+    .saved-game-card {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 12px;
+      background: #fffdf7;
+      border: 1px solid var(--line);
+    }
+
+    .remaining-input,
+    .game-name-input,
+    .parking-note {
+      width: 100%;
+      color: var(--ink);
+      background: #fff;
+      border: 1px solid #899793;
+      border-radius: 3px;
+      font: inherit;
+    }
+
+    .remaining-input {
+      min-height: 42px;
+      padding: 8px 10px;
+    }
+
+    .game-name-input {
+      min-height: 42px;
+      padding: 8px 10px;
+      margin-top: 10px;
+    }
+
+    .game-name-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .capacity-row,
+    .slot-actions,
+    .parking-footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .remaining-field {
+      display: grid;
+      gap: 7px;
+      margin-top: 14px;
+      color: #39484d;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .parking-note {
+      min-height: 74px;
+      padding: 10px 12px;
+      resize: vertical;
+    }
+
+    .parking-log-table {
+      width: 100%;
+      margin-top: 12px;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .parking-log-table th,
+    .parking-log-table td {
+      padding: 9px 8px;
+      text-align: left;
+      border: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    .parking-log-table th {
+      color: #fff;
+      background: var(--ink);
+      font-size: 12px;
+      letter-spacing: 0.05em;
+    }
+
+    .parking-log-table td {
+      background: #fffdf7;
+    }
+
+    @media (max-width: 720px) {
+      .config-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .parking-grid,
+      .parking-controls {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    dialog {
+      width: min(430px, calc(100vw - 32px));
+      padding: 0;
+      color: var(--ink);
+      background: #fffdf7;
+      border: 2px solid var(--ink);
+      border-radius: 4px;
+      box-shadow: 10px 10px 0 rgba(23, 33, 38, 0.25);
+    }
+
+    dialog::backdrop {
+      background: rgba(23, 33, 38, 0.58);
+    }
+
+    .dialog-form {
+      padding: 22px;
+    }
+
+    .dialog-form h2 {
+      margin: 7px 0 0;
+      font-size: 26px;
+    }
+
+    .dialog-note {
+      margin: 9px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .dialog-field {
+      display: grid;
+      gap: 7px;
+      margin-top: 18px;
+      color: #39484d;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .dialog-field input[type="text"] {
+      width: 100%;
+      padding: 10px 11px;
+      color: var(--ink);
+      background: #fff;
+      border: 1px solid #899793;
+      border-radius: 3px;
+    }
+
+    .dialog-field input[type="color"] {
+      width: 100%;
+      height: 44px;
+      padding: 4px;
+      background: #fff;
+      border: 1px solid #899793;
+      border-radius: 3px;
+    }
+
+    #colorError {
+      min-height: 20px;
+      margin: 10px 0 0;
+      color: var(--danger);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .dialog-actions {
+      display: flex;
+      gap: 9px;
+      justify-content: flex-end;
+      margin-top: 14px;
+    }
+
+    @media (max-width: 760px) {
+      .app-shell {
+        display: block;
+      }
+
+      .sidebar {
+        min-height: auto;
+        padding: 18px 16px 14px;
+        border-right: 0;
+        border-bottom: 4px solid var(--signal);
+      }
+
+      .brand-subtitle {
+        display: none;
+      }
+
+      #stageNav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-top: 16px;
+      }
+
+      .stage-button {
+        flex: 1 1 132px;
+        min-height: 48px;
+        padding: 8px;
+      }
+
+      .stage-index {
+        width: 27px;
+        height: 27px;
+      }
+
+      .save-panel {
+        margin-top: 14px;
+        padding-top: 12px;
+      }
+
+      .workspace {
+        padding: 24px 16px 34px;
+      }
+
+      .work-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .help-panel {
+        order: -1;
+      }
+
+      .color-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <p class="brand-kicker">BUS LEVEL / QUEUE LOG</p>
+        <h1 class="brand-title">乘客队列<br>记录工作台</h1>
+        <p class="brand-subtitle">按流程录入三个区域的乘客颜色，状态将在每次操作后自动保存。</p>
+      </div>
+
+      <nav id="stageNav" aria-label="录入流程">
+        <button class="stage-button is-active" type="button" data-stage="conveyor" aria-current="step">
+          <span class="stage-index">01</span>
+          <span><span class="stage-name">传送带</span><small class="stage-code">CONVEYOR</small></span>
+        </button>
+        <button class="stage-button" type="button" data-stage="left">
+          <span class="stage-index">02</span>
+          <span><span class="stage-name">左侧队列</span><small class="stage-code">LEFT QUEUE</small></span>
+        </button>
+        <button class="stage-button" type="button" data-stage="right">
+          <span class="stage-index">03</span>
+          <span><span class="stage-name">右侧队列</span><small class="stage-code">RIGHT QUEUE</small></span>
+        </button>
+        <button class="stage-button" type="button" data-stage="configs">
+          <span class="stage-index">04</span>
+          <span><span class="stage-name">全部配置</span><small class="stage-code">CONFIGS</small></span>
+        </button>
+        <button class="stage-button" type="button" data-stage="parking">
+          <span class="stage-index">05</span>
+          <span><span class="stage-name">车位记录</span><small class="stage-code">PARKING LOG</small></span>
+        </button>
+      </nav>
+
+      <div class="save-panel">
+        <p id="saveState" role="status" aria-live="polite">状态已载入</p>
+      </div>
+    </aside>
+
+    <main id="workspace" class="workspace"></main>
+  </div>
+
+  <dialog id="addColorDialog" aria-labelledby="addColorTitle">
+    <form class="dialog-form" method="dialog">
+      <p class="eyebrow">COLOR MAPPING</p>
+      <h2 id="addColorTitle">新增颜色映射</h2>
+      <p class="dialog-note">下一可用映射值：<strong id="nextColorValue">4</strong></p>
+
+      <label class="dialog-field">
+        颜色名称
+        <input id="colorName" name="colorName" type="text" autocomplete="off" placeholder="例如：绿色">
+      </label>
+
+      <label class="dialog-field">
+        颜色值
+        <input id="colorHex" name="colorHex" type="color" value="#32a852">
+      </label>
+
+      <p id="colorError" role="alert"></p>
+
+      <div class="dialog-actions">
+        <button class="action-button secondary" type="button" data-action="cancel-color">取消</button>
+        <button class="action-button primary" type="submit">保存颜色</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    const STORAGE_KEY = 'passenger-queue-recorder-state-v5';
+    const SECTIONS = ['conveyor', 'left', 'right'];
+    const STAGES = [...SECTIONS, 'configs', 'parking'];
+    const STATE_KEYS = ['colors', 'queues', 'histories', 'parking', 'activeStage'];
+    const COLOR_KEYS = ['name', 'value', 'hex'];
+    const PARKING_KEYS = ['slots', 'logs', 'nextVehicleId', 'savedGames', 'nextGameId', 'pending'];
+    const VEHICLE_KEYS = ['id', 'colorValue', 'capacity', 'remaining', 'enteredStep'];
+    const PENDING_KEYS = ['selectedVehicle', 'enteredSlot', 'departedVehicles', 'occupancyDurations'];
+    const LOG_KEYS = ['step', 'selectedVehicle', 'enteredSlot', 'slots', 'departedVehicles', 'occupancyDurations', 'note'];
+    const SAVED_GAME_KEYS = ['id', 'name', 'savedAt', 'slots', 'logs'];
+    const VEHICLE_CAPACITIES = [4, 6, 10];
+    const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/;
+    const DEFAULT_COLORS = [
+      { name: '红色', value: 1, hex: '#e54c4c' },
+      { name: '黄色', value: 2, hex: '#f3bd3d' },
+      { name: '蓝色', value: 3, hex: '#3478f6' },
+      { name: '绿色', value: 4, hex: '#32a852' },
+      { name: '粉色', value: 5, hex: '#ec71a5' },
+      { name: '紫色', value: 6, hex: '#8b5cf6' },
+      { name: '天蓝色', value: 7, hex: '#58bde9' },
+      { name: '棕色', value: 8, hex: '#8b5a3c' },
+      { name: '橙色', value: 9, hex: '#f97316' },
+      { name: '黑色', value: 10, hex: '#202529' },
+      { name: '白色', value: 11, hex: '#f7f7f2' }
+    ];
+
+    function createEmptySections() {
+      return { conveyor: [], left: [], right: [] };
+    }
+
+    function createEmptyParking() {
+      return {
+        slots: [null, null, null, null],
+        logs: [],
+        nextVehicleId: 1,
+        savedGames: [],
+        nextGameId: 1,
+        pending: {
+          selectedVehicle: '',
+          enteredSlot: '',
+          departedVehicles: [],
+          occupancyDurations: []
+        }
+      };
+    }
+
+    function createInitialState() {
+      return {
+        colors: DEFAULT_COLORS.map(color => ({ ...color })),
+        queues: createEmptySections(),
+        histories: createEmptySections(),
+        parking: createEmptyParking(),
+        activeStage: 'conveyor'
+      };
+    }
+
+    function hasSection(state, section) {
+      return Boolean(state
+        && typeof state === 'object'
+        && state.queues
+        && state.histories
+        && SECTIONS.includes(section)
+        && Array.isArray(state.queues[section])
+        && Array.isArray(state.histories[section]));
+    }
+
+    function updateSection(state, section, nextQueue) {
+      if (!hasSection(state, section)) return state;
+
+      return {
+        ...state,
+        queues: {
+          ...state.queues,
+          [section]: nextQueue
+        },
+        histories: {
+          ...state.histories,
+          [section]: [...state.histories[section], [...state.queues[section]]]
+        }
+      };
+    }
+
+    function appendValue(state, section, value) {
+      if (!hasSection(state, section) || !isMappedValue(state, value)) return state;
+      return updateSection(state, section, [...state.queues[section], value]);
+    }
+
+    function removeAt(state, section, index) {
+      if (!hasSection(state, section)
+        || !Number.isInteger(index)
+        || index < 0
+        || index >= state.queues[section].length) {
+        return state;
+      }
+
+      return updateSection(state, section, state.queues[section].filter((_, itemIndex) => itemIndex !== index));
+    }
+
+    function undo(state, section) {
+      if (!hasSection(state, section) || state.histories[section].length === 0) return state;
+
+      const history = state.histories[section];
+      return {
+        ...state,
+        queues: {
+          ...state.queues,
+          [section]: [...history.at(-1)]
+        },
+        histories: {
+          ...state.histories,
+          [section]: history.slice(0, -1)
+        }
+      };
+    }
+
+    function addColor(state, name, hex) {
+      if (!state
+        || !Array.isArray(state.colors)
+        || state.colors.some(color => !color || !Number.isSafeInteger(color.value) || color.value <= 0)
+        || typeof name !== 'string'
+        || name.trim() === ''
+        || typeof hex !== 'string'
+        || !HEX_PATTERN.test(hex)) {
+        return state;
+      }
+
+      const maxValue = state.colors.reduce((max, color) => Math.max(max, color.value), 0);
+      if (maxValue >= Number.MAX_SAFE_INTEGER) return state;
+
+      return {
+        ...state,
+        colors: [
+          ...state.colors,
+          { name: name.trim(), value: maxValue + 1, hex }
+        ]
+      };
+    }
+
+    function getConfigs(state) {
+      const conveyor = state.queues.conveyor.join(',');
+      const left = state.queues.left.join(',');
+      const right = state.queues.right.join(',');
+      return {
+        conveyor,
+        left,
+        right,
+        combined: [...state.queues.conveyor, ...state.queues.left, ...state.queues.right].join(',')
+      };
+    }
+
+    function startNextLevel(state) {
+      return {
+        colors: state.colors.map(color => ({ ...color })),
+        queues: createEmptySections(),
+        histories: createEmptySections(),
+        parking: {
+          slots: state.parking.slots.map(slot => slot ? { ...slot } : null),
+          logs: state.parking.logs.map(log => ({
+            ...log,
+            slots: [...log.slots]
+          })),
+          nextVehicleId: state.parking.nextVehicleId,
+          savedGames: state.parking.savedGames.map(game => ({
+            ...game,
+            slots: [...game.slots],
+            logs: game.logs.map(log => ({ ...log, slots: [...log.slots] }))
+          })),
+          nextGameId: state.parking.nextGameId,
+          pending: {
+            ...state.parking.pending,
+            departedVehicles: [...state.parking.pending.departedVehicles],
+            occupancyDurations: [...state.parking.pending.occupancyDurations]
+          }
+        },
+        activeStage: 'conveyor'
+      };
+    }
+
+    function resetEverything() {
+      return createInitialState();
+    }
+
+    function getColorName(state, value) {
+      const color = state.colors.find(item => item.value === value);
+      return color ? color.name : `映射${value}`;
+    }
+
+    function formatVehicle(state, vehicle) {
+      return `${getColorName(state, vehicle.colorValue)}${vehicle.capacity}`;
+    }
+
+    function formatSlot(state, vehicle) {
+      return vehicle ? `${formatVehicle(state, vehicle)}剩${vehicle.remaining}` : '空';
+    }
+
+    function resetParkingPending(parking) {
+      return {
+        ...parking,
+        pending: {
+          selectedVehicle: '',
+          enteredSlot: '',
+          departedVehicles: [],
+          occupancyDurations: []
+        }
+      };
+    }
+
+    function addVehicle(state, colorValue, capacity) {
+      if (!isValidState(state)
+        || !isMappedValue(state, colorValue)
+        || !VEHICLE_CAPACITIES.includes(capacity)) {
+        return state;
+      }
+
+      const slotIndex = state.parking.slots.findIndex(slot => slot === null);
+      if (slotIndex === -1) return state;
+
+      const vehicle = {
+        id: state.parking.nextVehicleId,
+        colorValue,
+        capacity,
+        remaining: capacity,
+        enteredStep: state.parking.logs.length + 1
+      };
+
+      const slots = state.parking.slots.map((slot, index) => index === slotIndex ? vehicle : slot);
+      return {
+        ...state,
+        parking: {
+          ...state.parking,
+          slots,
+          nextVehicleId: state.parking.nextVehicleId + 1,
+          pending: {
+            ...state.parking.pending,
+            selectedVehicle: formatVehicle(state, vehicle),
+            enteredSlot: String(slotIndex + 1)
+          }
+        }
+      };
+    }
+
+    function updateVehicleRemaining(state, slotIndex, remaining) {
+      if (!isValidState(state)
+        || !Number.isInteger(slotIndex)
+        || slotIndex < 0
+        || slotIndex >= 4
+        || !Number.isInteger(remaining)) {
+        return state;
+      }
+
+      const vehicle = state.parking.slots[slotIndex];
+      if (!vehicle || remaining < 0 || remaining > vehicle.capacity) return state;
+
+      return {
+        ...state,
+        parking: {
+          ...state.parking,
+          slots: state.parking.slots.map((slot, index) => index === slotIndex ? { ...vehicle, remaining } : slot)
+        }
+      };
+    }
+
+    function departVehicle(state, slotIndex) {
+      if (!isValidState(state)
+        || !Number.isInteger(slotIndex)
+        || slotIndex < 0
+        || slotIndex >= 4) {
+        return state;
+      }
+
+      const vehicle = state.parking.slots[slotIndex];
+      if (!vehicle) return state;
+
+      const departureStep = state.parking.logs.length + 1;
+      const occupiedSteps = departureStep - vehicle.enteredStep + 1;
+      const vehicleLabel = formatVehicle(state, vehicle);
+      return {
+        ...state,
+        parking: {
+          ...state.parking,
+          slots: state.parking.slots.map((slot, index) => index === slotIndex ? null : slot),
+          pending: {
+            ...state.parking.pending,
+            departedVehicles: [...state.parking.pending.departedVehicles, vehicleLabel],
+            occupancyDurations: [
+              ...state.parking.pending.occupancyDurations,
+              `${vehicleLabel}：${vehicle.enteredStep}→${departureStep}，共${occupiedSteps}步`
+            ]
+          }
+        }
+      };
+    }
+
+    function recordParkingStep(state, note) {
+      if (!isValidState(state) || typeof note !== 'string') return state;
+
+      const log = {
+        step: state.parking.logs.length + 1,
+        selectedVehicle: state.parking.pending.selectedVehicle,
+        enteredSlot: state.parking.pending.enteredSlot,
+        slots: state.parking.slots.map(slot => formatSlot(state, slot)),
+        departedVehicles: state.parking.pending.departedVehicles.join('、'),
+        occupancyDurations: state.parking.pending.occupancyDurations.join('、'),
+        note: note.trim()
+      };
+
+      return {
+        ...state,
+        parking: {
+          ...resetParkingPending(state.parking),
+          logs: [...state.parking.logs, log]
+        }
+      };
+    }
+
+    function deleteParkingLog(state, logIndex) {
+      if (!isValidState(state)
+        || !Number.isInteger(logIndex)
+        || logIndex < 0
+        || logIndex >= state.parking.logs.length) {
+        return state;
+      }
+
+      return {
+        ...state,
+        parking: {
+          ...state.parking,
+          logs: state.parking.logs
+            .filter((_, index) => index !== logIndex)
+            .map((log, index) => ({ ...log, step: index + 1 }))
+        }
+      };
+    }
+
+    function clearParking(state) {
+      if (!isValidState(state)) return state;
+      return {
+        ...state,
+        parking: {
+          ...createEmptyParking(),
+          savedGames: state.parking.savedGames.map(game => ({
+            ...game,
+            slots: [...game.slots],
+            logs: game.logs.map(log => ({ ...log, slots: [...log.slots] }))
+          })),
+          nextGameId: state.parking.nextGameId
+        }
+      };
+    }
+
+    function formatParkingLogsText(logs) {
+      const header = '步骤\t选择车辆\t进入车位\t1号车位\t2号车位\t3号车位\t4号车位\t开走车辆\t占位时长\t备注';
+      const rows = logs.map(log => [
+        log.step,
+        log.selectedVehicle,
+        log.enteredSlot,
+        ...log.slots,
+        log.departedVehicles,
+        log.occupancyDurations,
+        log.note
+      ].join('\t'));
+      return [header, ...rows].join('\n');
+    }
+
+    function getParkingLogText(state) {
+      return formatParkingLogsText(state.parking.logs);
+    }
+
+    function formatParkingGameName(levelOrName, attempt) {
+      if (typeof attempt === 'undefined') {
+        return typeof levelOrName === 'string' ? levelOrName.trim() : '';
+      }
+
+      const level = String(levelOrName).trim();
+      const round = String(attempt).trim();
+      if (level === '' && round === '') return '';
+      return `第${level || '?'}关第${round || '?'}局`;
+    }
+
+    function saveParkingGame(state, levelOrName, attempt) {
+      if (!isValidState(state) || state.parking.logs.length === 0) return state;
+
+      const name = formatParkingGameName(levelOrName, attempt);
+
+      const savedGame = {
+        id: state.parking.nextGameId,
+        name: name.trim() || `第 ${state.parking.nextGameId} 局`,
+        savedAt: new Date().toISOString(),
+        slots: state.parking.slots.map(slot => formatSlot(state, slot)),
+        logs: state.parking.logs.map(log => ({ ...log, slots: [...log.slots] }))
+      };
+
+      return {
+        ...state,
+        parking: {
+          ...state.parking,
+          savedGames: [...state.parking.savedGames, savedGame],
+          nextGameId: state.parking.nextGameId + 1
+        }
+      };
+    }
+
+    function loadParkingGame(state, gameId) {
+      if (!isValidState(state) || !Number.isSafeInteger(gameId)) return state;
+      const game = state.parking.savedGames.find(item => item.id === gameId);
+      if (!game) return state;
+
+      return {
+        ...state,
+        parking: {
+          ...state.parking,
+          slots: [null, null, null, null],
+          logs: game.logs.map(log => ({ ...log, slots: [...log.slots] })),
+          nextVehicleId: state.parking.nextVehicleId,
+          pending: {
+            selectedVehicle: '',
+            enteredSlot: '',
+            departedVehicles: [],
+            occupancyDurations: []
+          }
+        }
+      };
+    }
+
+    function deleteParkingGame(state, gameId) {
+      if (!isValidState(state) || !Number.isSafeInteger(gameId)) return state;
+      return {
+        ...state,
+        parking: {
+          ...state.parking,
+          savedGames: state.parking.savedGames.filter(game => game.id !== gameId)
+        }
+      };
+    }
+
+    function getSavedParkingGameText(state, gameId) {
+      if (!isValidState(state) || !Number.isSafeInteger(gameId)) return '';
+      const game = state.parking.savedGames.find(item => item.id === gameId);
+      return game ? formatParkingLogsText(game.logs) : '';
+    }
+
+    function isMappedValue(state, value) {
+      return Boolean(state
+        && Array.isArray(state.colors)
+        && Number.isSafeInteger(value)
+        && value > 0
+        && state.colors.some(color => color && color.value === value));
+    }
+
+    function isDenseArray(array) {
+      if (!Array.isArray(array) || Reflect.ownKeys(array).length !== array.length + 1) return false;
+
+      for (let index = 0; index < array.length; index += 1) {
+        if (!Object.prototype.hasOwnProperty.call(array, index)) return false;
+      }
+
+      return true;
+    }
+
+    function isValidQueue(queue, mappedValues) {
+      return isDenseArray(queue)
+        && queue.every(value => Number.isSafeInteger(value) && value > 0 && mappedValues.has(value));
+    }
+
+    function hasExactKeys(candidate, expectedKeys) {
+      return candidate
+        && typeof candidate === 'object'
+        && !Array.isArray(candidate)
+        && Object.keys(candidate).length === expectedKeys.length
+        && expectedKeys.every(key => Object.prototype.hasOwnProperty.call(candidate, key));
+    }
+
+    function isValidSections(sections, mappedValues, validateHistory) {
+      return hasExactKeys(sections, SECTIONS)
+        && SECTIONS.every(section => validateHistory
+          ? isDenseArray(sections[section])
+            && sections[section].every(queue => isValidQueue(queue, mappedValues))
+          : isValidQueue(sections[section], mappedValues));
+    }
+
+    function isValidVehicle(vehicle, mappedValues) {
+      return vehicle === null || (hasExactKeys(vehicle, VEHICLE_KEYS)
+        && Number.isSafeInteger(vehicle.id)
+        && vehicle.id > 0
+        && Number.isSafeInteger(vehicle.colorValue)
+        && mappedValues.has(vehicle.colorValue)
+        && VEHICLE_CAPACITIES.includes(vehicle.capacity)
+        && Number.isInteger(vehicle.remaining)
+        && vehicle.remaining >= 0
+        && vehicle.remaining <= vehicle.capacity
+        && Number.isSafeInteger(vehicle.enteredStep)
+        && vehicle.enteredStep > 0);
+    }
+
+    function isValidParking(parking, mappedValues) {
+      return hasExactKeys(parking, PARKING_KEYS)
+        && isDenseArray(parking.slots)
+        && parking.slots.length === 4
+        && parking.slots.every(slot => isValidVehicle(slot, mappedValues))
+        && isDenseArray(parking.logs)
+        && parking.logs.every((log, index) => hasExactKeys(log, LOG_KEYS)
+          && Number.isSafeInteger(log.step)
+          && log.step === index + 1
+          && typeof log.selectedVehicle === 'string'
+          && typeof log.enteredSlot === 'string'
+          && isDenseArray(log.slots)
+          && log.slots.length === 4
+          && log.slots.every(slot => typeof slot === 'string')
+          && typeof log.departedVehicles === 'string'
+          && typeof log.occupancyDurations === 'string'
+          && typeof log.note === 'string')
+        && Number.isSafeInteger(parking.nextVehicleId)
+        && parking.nextVehicleId > 0
+        && isDenseArray(parking.savedGames)
+        && parking.savedGames.every(game => hasExactKeys(game, SAVED_GAME_KEYS)
+          && Number.isSafeInteger(game.id)
+          && game.id > 0
+          && typeof game.name === 'string'
+          && game.name.trim() !== ''
+          && typeof game.savedAt === 'string'
+          && isDenseArray(game.slots)
+          && game.slots.length === 4
+          && game.slots.every(slot => typeof slot === 'string')
+          && isDenseArray(game.logs)
+          && game.logs.every((log, index) => hasExactKeys(log, LOG_KEYS)
+            && Number.isSafeInteger(log.step)
+            && log.step === index + 1
+            && typeof log.selectedVehicle === 'string'
+            && typeof log.enteredSlot === 'string'
+            && isDenseArray(log.slots)
+            && log.slots.length === 4
+            && log.slots.every(slot => typeof slot === 'string')
+            && typeof log.departedVehicles === 'string'
+            && typeof log.occupancyDurations === 'string'
+            && typeof log.note === 'string'))
+        && Number.isSafeInteger(parking.nextGameId)
+        && parking.nextGameId > 0
+        && hasExactKeys(parking.pending, PENDING_KEYS)
+        && typeof parking.pending.selectedVehicle === 'string'
+        && typeof parking.pending.enteredSlot === 'string'
+        && isDenseArray(parking.pending.departedVehicles)
+        && parking.pending.departedVehicles.every(vehicle => typeof vehicle === 'string')
+        && isDenseArray(parking.pending.occupancyDurations)
+        && parking.pending.occupancyDurations.every(duration => typeof duration === 'string');
+    }
+
+    function isValidState(candidate) {
+      if (!hasExactKeys(candidate, STATE_KEYS)
+        || !isDenseArray(candidate.colors)
+        || candidate.colors.length === 0) {
+        return false;
+      }
+
+      const mappedValues = new Set();
+      const hasValidColors = candidate.colors.every(color => {
+        const isValid = hasExactKeys(color, COLOR_KEYS)
+          && typeof color.name === 'string'
+          && color.name.trim() !== ''
+          && Number.isSafeInteger(color.value)
+          && color.value > 0
+          && !mappedValues.has(color.value)
+          && typeof color.hex === 'string'
+          && HEX_PATTERN.test(color.hex);
+
+        if (isValid) mappedValues.add(color.value);
+        return isValid;
+      });
+
+      return hasValidColors
+        && isValidSections(candidate.queues, mappedValues, false)
+        && isValidSections(candidate.histories, mappedValues, true)
+        && isValidParking(candidate.parking, mappedValues)
+        && STAGES.includes(candidate.activeStage);
+    }
+
+    function loadState() {
+      try {
+        const storedState = JSON.parse(localStorage.getItem(STORAGE_KEY));
+        return isValidState(storedState) ? storedState : createInitialState();
+      } catch {
+        return createInitialState();
+      }
+    }
+
+    function saveState(nextState) {
+      if (!isValidState(nextState)) return false;
+
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    let state = loadState();
+
+    window.QueueRecorderCore = Object.freeze({
+      createInitialState,
+      appendValue,
+      removeAt,
+      undo,
+      addColor,
+      getConfigs,
+      addVehicle,
+      updateVehicleRemaining,
+      departVehicle,
+      recordParkingStep,
+      deleteParkingLog,
+      clearParking,
+      getParkingLogText,
+      saveParkingGame,
+      loadParkingGame,
+      deleteParkingGame,
+      getSavedParkingGameText,
+      startNextLevel,
+      resetEverything,
+      loadState,
+      saveState
+    });
+
+    const STAGE_DETAILS = {
+      conveyor: { name: '传送带', code: 'CONVEYOR INPUT' },
+      left: { name: '左侧队列', code: 'LEFT QUEUE INPUT' },
+      right: { name: '右侧队列', code: 'RIGHT QUEUE INPUT' }
+    };
+    const workspace = document.querySelector('#workspace');
+    const stageNav = document.querySelector('#stageNav');
+    const saveStateFeedback = document.querySelector('#saveState');
+    const addColorDialog = document.querySelector('#addColorDialog');
+    const addColorForm = addColorDialog.querySelector('form');
+    const colorName = document.querySelector('#colorName');
+    const colorHex = document.querySelector('#colorHex');
+    const colorError = document.querySelector('#colorError');
+    const nextColorValue = document.querySelector('#nextColorValue');
+
+    function getNextColorValue() {
+      return state.colors.reduce((max, color) => Math.max(max, color.value), 0) + 1;
+    }
+
+    function updateSaveFeedback(saved) {
+      saveStateFeedback.classList.toggle('is-saved', saved);
+      saveStateFeedback.classList.toggle('is-error', !saved);
+      saveStateFeedback.textContent = saved ? '状态已自动保存' : '状态保存失败';
+    }
+
+    function updateState(nextState) {
+      state = nextState;
+      updateSaveFeedback(saveState(state));
+      render();
+      return state;
+    }
+
+    function getColor(value) {
+      return state.colors.find(color => color.value === value);
+    }
+
+    function usesDarkText(hex) {
+      const red = Number.parseInt(hex.slice(1, 3), 16);
+      const green = Number.parseInt(hex.slice(3, 5), 16);
+      const blue = Number.parseInt(hex.slice(5, 7), 16);
+      return (red * 299 + green * 587 + blue * 114) / 1000 > 170;
+    }
+
+    function renderNavigation() {
+      stageNav.querySelectorAll('.stage-button[data-stage]').forEach(button => {
+        const isActive = button.dataset.stage === state.activeStage;
+        button.classList.toggle('is-active', isActive);
+        if (isActive) {
+          button.setAttribute('aria-current', 'step');
+        } else {
+          button.removeAttribute('aria-current');
+        }
+      });
+    }
+
+    function renderColorButtons(container) {
+      state.colors.forEach(color => {
+        const button = document.createElement('button');
+        button.className = 'color-button';
+        button.type = 'button';
+        button.dataset.value = String(color.value);
+        button.style.setProperty('--button-color', color.hex);
+        if (usesDarkText(color.hex)) button.classList.add('uses-dark-text');
+
+        const name = document.createElement('span');
+        name.textContent = color.name;
+        const mapping = document.createElement('small');
+        mapping.textContent = color.value <= 9
+          ? `数字键 ${color.value}`
+          : `映射值 ${color.value}（鼠标点击）`;
+        button.append(name, mapping);
+        container.append(button);
+      });
+
+      const addButton = document.createElement('button');
+      addButton.className = 'add-color-button';
+      addButton.type = 'button';
+      addButton.dataset.action = 'add-color';
+      addButton.innerHTML = '<span>＋ 新增颜色</span><small>ADD COLOR MAPPING</small>';
+      container.append(addButton);
+    }
+
+    function renderSequence(container, queue) {
+      if (queue.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'empty-sequence';
+        empty.textContent = '尚未录入乘客，点击上方颜色或按数字键开始。';
+        container.append(empty);
+        return;
+      }
+
+      queue.forEach((value, index) => {
+        const color = getColor(value);
+        const chip = document.createElement('button');
+        chip.className = 'sequence-chip';
+        chip.type = 'button';
+        chip.dataset.index = String(index);
+        chip.style.setProperty('--chip-color', color.hex);
+        chip.textContent = String(value);
+        chip.title = `删除第 ${index + 1} 位：${color.name}`;
+        chip.setAttribute('aria-label', `删除第 ${index + 1} 位乘客：${color.name}`);
+        if (usesDarkText(color.hex)) chip.classList.add('uses-dark-text');
+        container.append(chip);
+      });
+    }
+
+    function renderEntryStage() {
+      const section = state.activeStage;
+      const queue = state.queues[section];
+      const history = state.histories[section];
+      const detail = STAGE_DETAILS[section];
+
+      workspace.innerHTML = `
+        <header class="workspace-header">
+          <div>
+            <p class="eyebrow">${detail.code}</p>
+            <h2 class="workspace-title">${detail.name}</h2>
+          </div>
+          <div class="count-card">
+            <span>PASSENGERS</span>
+            <strong>${queue.length}</strong>
+          </div>
+        </header>
+
+        <div class="work-grid">
+          <section class="panel input-panel" aria-labelledby="colorInputTitle">
+            <p class="panel-label">01 / COLOR INPUT</p>
+            <h2 id="colorInputTitle">选择乘客颜色</h2>
+            <div class="color-grid"></div>
+          </section>
+
+          <aside class="panel help-panel">
+            <p class="panel-label">QUICK KEYS</p>
+            <h2>快速录入</h2>
+            <p>焦点不在输入控件时，可直接使用数字键录入。点击序列中的圆形色块可删除对应乘客。</p>
+            <div class="key-list">
+              <div class="key-line"><kbd>1-9</kbd><span>追加映射颜色</span></div>
+              <div class="key-line"><kbd>Ctrl Z</kbd><span>撤销最近操作</span></div>
+            </div>
+          </aside>
+        </div>
+
+        <section class="panel sequence-panel" aria-labelledby="sequenceTitle">
+          <p class="panel-label">02 / RECORDED SEQUENCE</p>
+          <h2 id="sequenceTitle">已录入序列</h2>
+          <div class="sequence-strip"></div>
+          <div class="action-row">
+            <button class="action-button secondary" type="button" data-action="undo"${history.length === 0 ? ' disabled' : ''}>撤销最近操作</button>
+            <button class="action-button primary" type="button" data-action="next">下一步</button>
+          </div>
+        </section>
+      `;
+
+      renderColorButtons(workspace.querySelector('.color-grid'));
+      renderSequence(workspace.querySelector('.sequence-strip'), queue);
+    }
+
+    function renderConfigsStage() {
+      const configs = getConfigs(state);
+      const cards = [
+        { key: 'conveyor', title: '传送带配置', count: state.queues.conveyor.length },
+        { key: 'left', title: '左侧队列配置', count: state.queues.left.length },
+        { key: 'right', title: '右侧队列配置', count: state.queues.right.length },
+        { key: 'combined', title: '整体配置', count: state.queues.conveyor.length + state.queues.left.length + state.queues.right.length }
+      ];
+
+      workspace.innerHTML = `
+        <section class="config-output">
+          <p class="eyebrow">CONFIG OUTPUT / READY</p>
+          <h1>全部配置</h1>
+          <p>四份配置均可单独复制，粘贴到飞书表格即可。整体配置顺序为：传送带、左侧队列、右侧队列。</p>
+          <div class="config-stats">
+            <div class="config-stat"><span>传送带</span><strong>${state.queues.conveyor.length}</strong></div>
+            <div class="config-stat"><span>左侧队列</span><strong>${state.queues.left.length}</strong></div>
+            <div class="config-stat"><span>右侧队列</span><strong>${state.queues.right.length}</strong></div>
+          </div>
+          <div class="config-grid"></div>
+          <div class="config-footer">
+            <button class="action-button primary" type="button" data-action="next-level">开始下一关</button>
+            <button class="action-button danger" type="button" data-action="reset-everything">彻底重置</button>
+          </div>
+        </section>
+      `;
+
+      const grid = workspace.querySelector('.config-grid');
+      cards.forEach(card => {
+        const element = document.createElement('article');
+        element.className = 'config-card';
+        element.dataset.configKey = card.key;
+        element.innerHTML = `
+          <div class="config-card-header">
+            <h2>${card.title}</h2>
+            <span class="config-count">${card.count} 位乘客</span>
+          </div>
+          <div class="config-value" aria-label="${card.title}"></div>
+          <div class="config-actions">
+            <span class="panel-label">COMMA SEPARATED</span>
+            <button class="copy-button" type="button" data-action="copy-config" data-config-key="${card.key}">复制配置</button>
+          </div>
+        `;
+        element.querySelector('.config-value').textContent = configs[card.key];
+        grid.append(element);
+      });
+    }
+
+    function renderParkingSlots(container) {
+      state.parking.slots.forEach((vehicle, index) => {
+        const slot = document.createElement('article');
+        slot.className = `parking-slot${vehicle ? ' is-occupied' : ' is-empty'}`;
+        slot.dataset.slotIndex = String(index);
+
+        if (!vehicle) {
+          const wrapper = document.createElement('div');
+          const label = document.createElement('span');
+          label.className = 'slot-label';
+          label.textContent = `${index + 1} 号车位`;
+          const empty = document.createElement('strong');
+          empty.textContent = '空';
+          wrapper.append(label, empty);
+          slot.append(wrapper);
+          container.append(slot);
+          return;
+        }
+
+        const color = getColor(vehicle.colorValue);
+        slot.style.setProperty('--slot-color', color.hex);
+        if (usesDarkText(color.hex)) slot.classList.add('uses-dark-text');
+        const label = document.createElement('span');
+        label.className = 'slot-label';
+        label.textContent = `${index + 1} 号车位`;
+        const title = document.createElement('h3');
+        title.textContent = formatVehicle(state, vehicle);
+        const remainingLabel = document.createElement('label');
+        remainingLabel.className = 'remaining-field';
+        remainingLabel.textContent = '剩余座位';
+        const input = document.createElement('input');
+        input.className = 'remaining-input';
+        input.type = 'number';
+        input.min = '0';
+        input.max = String(vehicle.capacity);
+        input.value = String(vehicle.remaining);
+        input.dataset.slotIndex = String(index);
+        remainingLabel.append(input);
+        const actions = document.createElement('div');
+        actions.className = 'slot-actions';
+        const departButton = document.createElement('button');
+        departButton.className = 'action-button secondary';
+        departButton.type = 'button';
+        departButton.dataset.action = 'depart-vehicle';
+        departButton.dataset.slotIndex = String(index);
+        departButton.textContent = '已开走';
+        actions.append(departButton);
+        slot.append(label, title, remainingLabel, actions);
+        container.append(slot);
+      });
+    }
+
+    function renderParkingLogs(container) {
+      if (state.parking.logs.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'empty-sequence';
+        empty.textContent = '尚未记录操作。选择车辆并确认车位状态后，点击“记录本步”。';
+        container.append(empty);
+        return;
+      }
+
+      const table = document.createElement('table');
+      table.className = 'parking-log-table';
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>步骤</th>
+            <th>选择车辆</th>
+            <th>进入车位</th>
+            <th>1号车位</th>
+            <th>2号车位</th>
+            <th>3号车位</th>
+            <th>4号车位</th>
+            <th>开走车辆</th>
+            <th>占位时长</th>
+            <th>备注</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      `;
+
+      const body = table.querySelector('tbody');
+      state.parking.logs.forEach((log, index) => {
+        const row = document.createElement('tr');
+        [
+          log.step,
+          log.selectedVehicle,
+          log.enteredSlot,
+          log.slots[0],
+          log.slots[1],
+          log.slots[2],
+          log.slots[3],
+          log.departedVehicles,
+          log.occupancyDurations,
+          log.note
+        ].forEach(value => {
+          const cell = document.createElement('td');
+          cell.textContent = String(value);
+          row.append(cell);
+        });
+        const actionCell = document.createElement('td');
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'action-button secondary';
+        deleteButton.type = 'button';
+        deleteButton.dataset.action = 'delete-parking-log';
+        deleteButton.dataset.logIndex = String(index);
+        deleteButton.textContent = '删除';
+        actionCell.append(deleteButton);
+        row.append(actionCell);
+        body.append(row);
+      });
+      container.append(table);
+    }
+
+    function renderVehiclePickButtons(container) {
+      state.colors.forEach(color => {
+        const card = document.createElement('article');
+        card.className = 'vehicle-pick-card';
+        card.style.setProperty('--vehicle-color', color.hex);
+        if (usesDarkText(color.hex)) card.classList.add('uses-dark-text');
+
+        const title = document.createElement('strong');
+        title.textContent = color.name;
+        const row = document.createElement('div');
+        row.className = 'vehicle-capacity-row';
+        VEHICLE_CAPACITIES.forEach(capacity => {
+          const button = document.createElement('button');
+          button.className = 'vehicle-capacity-button';
+          button.type = 'button';
+          button.dataset.action = 'add-vehicle';
+          button.dataset.colorValue = String(color.value);
+          button.dataset.capacity = String(capacity);
+          button.textContent = `${capacity}座`;
+          row.append(button);
+        });
+        card.append(title, row);
+        container.append(card);
+      });
+    }
+
+    function renderSavedParkingGames(container) {
+      if (state.parking.savedGames.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'empty-sequence';
+        empty.textContent = '还没有保存单局车辆记录。';
+        container.append(empty);
+        return;
+      }
+
+      state.parking.savedGames.forEach(game => {
+        const card = document.createElement('article');
+        card.className = 'saved-game-card';
+        const info = document.createElement('div');
+        const title = document.createElement('strong');
+        title.textContent = game.name;
+        const meta = document.createElement('p');
+        meta.className = 'empty-sequence';
+        meta.textContent = `${game.logs.length} 步记录`;
+        info.append(title, meta);
+
+        const actions = document.createElement('div');
+        actions.className = 'slot-actions';
+        [
+          ['load-parking-game', '载入'],
+          ['copy-saved-parking-game', '复制'],
+          ['delete-parking-game', '删除']
+        ].forEach(([action, label]) => {
+          const button = document.createElement('button');
+          button.className = action === 'delete-parking-game' ? 'action-button danger' : 'action-button secondary';
+          button.type = 'button';
+          button.dataset.action = action;
+          button.dataset.gameId = String(game.id);
+          button.textContent = label;
+          actions.append(button);
+        });
+        card.append(info, actions);
+        container.append(card);
+      });
+    }
+
+    function renderParkingStage() {
+      workspace.innerHTML = `
+        <div class="parking-page">
+          <header class="workspace-header">
+            <div>
+              <p class="eyebrow">PARKING OPERATION LOG</p>
+              <h2 class="workspace-title">车位操作记录</h2>
+            </div>
+            <div class="count-card">
+              <span>LOGS</span>
+              <strong>${state.parking.logs.length}</strong>
+            </div>
+          </header>
+
+          <section class="panel" aria-labelledby="vehicleInputTitle">
+            <p class="panel-label">01 / SELECT VEHICLE</p>
+            <h2 id="vehicleInputTitle">选择开出的车辆</h2>
+            <p class="empty-sequence">直接点对应颜色下的座位数，新车会进入最靠左空车位。</p>
+            <div class="vehicle-pick-grid"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="parkingSlotsTitle">
+            <p class="panel-label">02 / FIXED SLOTS</p>
+            <h2 id="parkingSlotsTitle">当前车位状态</h2>
+            <div class="parking-grid"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="parkingRecordTitle">
+            <p class="panel-label">03 / SNAPSHOT</p>
+            <h2 id="parkingRecordTitle">记录本步</h2>
+            <textarea id="parkingNote" class="parking-note" placeholder="备注，例如：红车先吃 2 人"></textarea>
+            <div class="game-name-grid">
+              <input id="parkingLevelNumber" class="game-name-input" type="text" inputmode="numeric" autocomplete="off" placeholder="第几关">
+              <input id="parkingAttemptNumber" class="game-name-input" type="text" inputmode="numeric" autocomplete="off" placeholder="第几局">
+            </div>
+            <div class="parking-footer">
+              <button class="action-button primary" type="button" data-action="record-parking-step">记录本步</button>
+              <button class="action-button secondary" type="button" data-action="save-parking-game">保存本局记录</button>
+              <button class="action-button secondary" type="button" data-action="copy-parking-log">复制日志</button>
+              <button class="action-button danger" type="button" data-action="clear-parking">清空车位记录</button>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="parkingLogTitle">
+            <p class="panel-label">04 / FEISHU TABLE</p>
+            <h2 id="parkingLogTitle">详细日志</h2>
+            <div class="parking-log-wrap"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="savedParkingTitle">
+            <p class="panel-label">05 / SAVED GAMES</p>
+            <h2 id="savedParkingTitle">已保存单局</h2>
+            <div class="saved-game-list"></div>
+          </section>
+        </div>
+      `;
+
+      renderVehiclePickButtons(workspace.querySelector('.vehicle-pick-grid'));
+      renderParkingSlots(workspace.querySelector('.parking-grid'));
+      renderParkingLogs(workspace.querySelector('.parking-log-wrap'));
+      renderSavedParkingGames(workspace.querySelector('.saved-game-list'));
+    }
+
+    function fallbackCopyText(text) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.append(textarea);
+
+      try {
+        textarea.select();
+        if (!document.execCommand('copy')) throw new Error('Clipboard fallback failed.');
+      } finally {
+        textarea.remove();
+      }
+    }
+
+    async function copyText(text, button) {
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (error) {
+            fallbackCopyText(text);
+          }
+        } else {
+          fallbackCopyText(text);
+        }
+
+        const previousLabel = button.textContent;
+        button.textContent = '已复制';
+        window.setTimeout(() => {
+          if (button.isConnected) button.textContent = previousLabel;
+        }, 1200);
+        return true;
+      } catch (error) {
+        button.textContent = '复制失败';
+        return false;
+      }
+    }
+
+    function render() {
+      renderNavigation();
+      if (SECTIONS.includes(state.activeStage)) {
+        renderEntryStage();
+      } else if (state.activeStage === 'configs') {
+        renderConfigsStage();
+      } else {
+        renderParkingStage();
+      }
+    }
+
+    function openAddColorDialog() {
+      colorName.value = '';
+      colorHex.value = '#32a852';
+      colorError.textContent = '';
+      nextColorValue.textContent = String(getNextColorValue());
+      addColorDialog.showModal();
+      colorName.focus();
+    }
+
+    stageNav.addEventListener('click', event => {
+      const button = event.target.closest('.stage-button[data-stage]');
+      if (!button) return;
+      updateState({ ...state, activeStage: button.dataset.stage });
+    });
+
+    workspace.addEventListener('click', event => {
+      const target = event.target.closest('button');
+      if (!target) return;
+
+      if (target.matches('.color-button[data-value]')) {
+        updateState(appendValue(state, state.activeStage, Number(target.dataset.value)));
+      } else if (target.matches('.sequence-chip[data-index]')) {
+        updateState(removeAt(state, state.activeStage, Number(target.dataset.index)));
+      } else if (target.matches('[data-action="undo"]')) {
+        updateState(undo(state, state.activeStage));
+      } else if (target.matches('[data-action="next"]')) {
+        const nextStage = STAGES[STAGES.indexOf(state.activeStage) + 1];
+        if (nextStage) updateState({ ...state, activeStage: nextStage });
+      } else if (target.matches('[data-action="add-color"]')) {
+        openAddColorDialog();
+      } else if (target.matches('[data-action="copy-config"][data-config-key]')) {
+        void copyText(getConfigs(state)[target.dataset.configKey], target);
+      } else if (target.matches('[data-action="next-level"]')) {
+        updateState(startNextLevel(state));
+      } else if (target.matches('[data-action="reset-everything"]')
+        && window.confirm('确定要清空全部队列和自定义颜色吗？')) {
+        updateState(resetEverything());
+      } else if (target.matches('[data-action="add-vehicle"][data-color-value][data-capacity]')) {
+        updateState(addVehicle(state, Number(target.dataset.colorValue), Number(target.dataset.capacity)));
+      } else if (target.matches('[data-action="depart-vehicle"][data-slot-index]')) {
+        updateState(departVehicle(state, Number(target.dataset.slotIndex)));
+      } else if (target.matches('[data-action="record-parking-step"]')) {
+        updateState(recordParkingStep(state, workspace.querySelector('#parkingNote').value));
+      } else if (target.matches('[data-action="copy-parking-log"]')) {
+        void copyText(getParkingLogText(state), target);
+      } else if (target.matches('[data-action="save-parking-game"]')) {
+        updateState(saveParkingGame(
+          state,
+          workspace.querySelector('#parkingLevelNumber').value,
+          workspace.querySelector('#parkingAttemptNumber').value
+        ));
+      } else if (target.matches('[data-action="load-parking-game"][data-game-id]')) {
+        updateState(loadParkingGame(state, Number(target.dataset.gameId)));
+      } else if (target.matches('[data-action="copy-saved-parking-game"][data-game-id]')) {
+        void copyText(getSavedParkingGameText(state, Number(target.dataset.gameId)), target);
+      } else if (target.matches('[data-action="delete-parking-game"][data-game-id]')) {
+        updateState(deleteParkingGame(state, Number(target.dataset.gameId)));
+      } else if (target.matches('[data-action="delete-parking-log"][data-log-index]')) {
+        updateState(deleteParkingLog(state, Number(target.dataset.logIndex)));
+      } else if (target.matches('[data-action="clear-parking"]')
+        && window.confirm('确定要清空全部车位和操作日志吗？')) {
+        updateState(clearParking(state));
+      }
+    });
+
+    workspace.addEventListener('change', event => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement) || !target.matches('.remaining-input[data-slot-index]')) return;
+      updateState(updateVehicleRemaining(state, Number(target.dataset.slotIndex), Number(target.value)));
+    });
+
+    addColorDialog.querySelector('[data-action="cancel-color"]').addEventListener('click', () => {
+      addColorDialog.close();
+    });
+
+    addColorForm.addEventListener('submit', event => {
+      event.preventDefault();
+      if (colorName.value.trim() === '') {
+        colorError.textContent = '请输入颜色名称。';
+        colorName.focus();
+        return;
+      }
+
+      const nextState = addColor(state, colorName.value, colorHex.value);
+      if (nextState === state) {
+        colorError.textContent = '颜色保存失败，请检查输入。';
+        return;
+      }
+
+      addColorDialog.close();
+      updateState(nextState);
+    });
+
+    document.addEventListener('keydown', event => {
+      if (addColorDialog.open
+        || !SECTIONS.includes(state.activeStage)
+        || (event.target instanceof Element && event.target.closest('input, textarea, select'))) {
+        return;
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        updateState(undo(state, state.activeStage));
+        return;
+      }
+
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && /^[0-9]$/.test(event.key)) {
+        updateState(appendValue(state, state.activeStage, Number(event.key)));
+      }
+    });
+
+    window.QueueRecorderApp = Object.freeze({
+      getState: () => state,
+      updateState,
+      render,
+      copyText
+    });
+
+    render();
+  </script>
+</body>
+</html>
