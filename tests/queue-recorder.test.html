@@ -359,6 +359,28 @@
           equal(core.appendValue(stateWithUnsafeColor, 'left', unsafeValue), stateWithUnsafeColor, '非安全整数映射值不应追加');
         });
 
+        test('颜色快捷数量追加只产生一条撤销历史', () => {
+          let state = core.createInitialState();
+          state = core.appendBatchValues(state, 'conveyor', [1, 2, 3]);
+          equal(state.queues.conveyor, [1, 2, 3], '批量追加失败');
+          equal(state.histories.conveyor, [[]], '批量追加应只记录一条历史');
+          state = core.appendBatchValues(state, 'conveyor', [4, 5]);
+          state = core.undo(state, 'conveyor');
+          equal(state.queues.conveyor, [1, 2, 3], '撤销批量追加失败');
+          equal(core.appendBatchValues(state, 'conveyor', [1, 99]), state, '批量追加遇到未知值应保持 no-op');
+        });
+
+        test('颜色快捷数量删除按颜色从队尾移除并可撤销', () => {
+          let state = core.createInitialState();
+          state = core.appendBatchValues(state, 'conveyor', [1, 2, 1, 3, 1]);
+          state = core.removeBatchValues(state, 'conveyor', 1, 2);
+          equal(state.queues.conveyor, [1, 2, 3], '快捷删除应从队尾移除指定颜色');
+          state = core.undo(state, 'conveyor');
+          equal(state.queues.conveyor, [1, 2, 1, 3, 1], '撤销快捷删除失败');
+          equal(core.removeBatchValues(state, 'conveyor', 1, 0), state, '删除数量小于 1 应保持 no-op');
+          equal(core.removeBatchValues(state, 'unknown', 1, 1), state, '未知区域快捷删除应保持 no-op');
+        });
+
         test('核心队列操作遇到畸形状态时保持 no-op', () => {
           const malformedSections = { colors: [], queues: {}, histories: {} };
           const missingColors = { queues: clone(EMPTY_SECTIONS), histories: clone(EMPTY_SECTIONS) };
@@ -734,6 +756,24 @@
           app.updateState(stateWithTenColors);
           equal(appDocument.querySelector('.color-button[data-value="9"] small').textContent, '数字键 9', '映射值 9 的快捷键提示错误');
           equal(appDocument.querySelector('.color-button[data-value="10"] small').textContent, '映射值 10（鼠标点击）', '映射值 10 不应显示数字键提示');
+        });
+
+        test('颜色卡片内快捷数量按钮支持追加和删除', () => {
+          app.updateState(core.createInitialState());
+          assert(!appDocument.querySelector('#batchValues'), '不应再渲染独立批量录入文本框');
+          const plusThree = appDocument.querySelector('.color-quick-button[data-value="1"][data-delta="3"]');
+          assert(plusThree, '颜色卡片缺少 +3 快捷按钮');
+          assert(appDocument.querySelector('.color-quick-button[data-value="1"][data-delta="-1"]'), '颜色卡片缺少 -1 快捷按钮');
+          assert(appDocument.querySelector('.color-quick-button[data-value="1"][data-delta="-2"]'), '颜色卡片缺少 -2 快捷按钮');
+          plusThree.click();
+          equal(app.getState().queues.conveyor, [1, 1, 1], '+3 未追加三个当前颜色');
+          appDocument.querySelector('.color-quick-button[data-value="1"][data-delta="-1"]').click();
+          equal(app.getState().queues.conveyor, [1, 1], '-1 未删除一个当前颜色');
+          appDocument.querySelector('.color-button[data-value="2"]').click();
+          appDocument.querySelector('.color-quick-button[data-value="1"][data-delta="-2"]').click();
+          equal(app.getState().queues.conveyor, [2], '-2 应只删除指定颜色并保留其他颜色');
+          appDocument.querySelector('[data-action="undo"]').click();
+          equal(app.getState().queues.conveyor, [1, 1, 2], '撤销快捷删除失败');
         });
 
         test('配置页生成四份可单独复制的逗号分隔配置', () => {

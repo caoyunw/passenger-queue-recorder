@@ -325,6 +325,13 @@
       transition: transform 120ms ease, box-shadow 120ms ease;
     }
 
+    .color-card {
+      display: grid;
+      grid-template-rows: minmax(88px, auto) auto;
+      gap: 7px;
+      min-width: 0;
+    }
+
     .color-button:hover,
     .add-color-button:hover {
       transform: translateY(-2px);
@@ -373,6 +380,36 @@
         linear-gradient(225deg, rgba(242, 189, 67, 0.22) 25%, transparent 25%) -8px 0 / 16px 16px,
         #fff9e8;
       border-style: dashed;
+    }
+
+    .color-quick-row {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 4px;
+    }
+
+    .color-quick-button {
+      min-width: 0;
+      min-height: 30px;
+      padding: 0 4px;
+      color: var(--ink);
+      background: #fffdf7;
+      border: 1px solid rgba(23, 33, 38, 0.42);
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0;
+      box-shadow: 0 2px 0 rgba(23, 33, 38, 0.12);
+    }
+
+    .color-quick-button.is-remove {
+      color: #fffdf7;
+      background: var(--danger);
+      border-color: rgba(23, 33, 38, 0.5);
+    }
+
+    .color-quick-button:hover {
+      transform: translateY(-1px);
     }
 
     .sequence-panel {
@@ -1070,6 +1107,38 @@
       return updateSection(state, section, [...state.queues[section], value]);
     }
 
+    function hasBatchValues(state, values) {
+      return isDenseArray(values)
+        && values.length > 0
+        && values.every(value => isMappedValue(state, value));
+    }
+
+    function appendBatchValues(state, section, values) {
+      if (!hasSection(state, section) || !hasBatchValues(state, values)) return state;
+      return updateSection(state, section, [...state.queues[section], ...values]);
+    }
+
+    function removeBatchValues(state, section, value, count) {
+      if (!hasSection(state, section)
+        || !isMappedValue(state, value)
+        || !Number.isInteger(count)
+        || count < 1) {
+        return state;
+      }
+
+      let remaining = count;
+      const nextQueue = [...state.queues[section]];
+      for (let index = nextQueue.length - 1; index >= 0 && remaining > 0; index -= 1) {
+        if (nextQueue[index] === value) {
+          nextQueue.splice(index, 1);
+          remaining -= 1;
+        }
+      }
+
+      if (nextQueue.length === state.queues[section].length) return state;
+      return updateSection(state, section, nextQueue);
+    }
+
     function removeAt(state, section, index) {
       if (!hasSection(state, section)
         || !Number.isInteger(index)
@@ -1583,6 +1652,8 @@
     window.QueueRecorderCore = Object.freeze({
       createInitialState,
       appendValue,
+      appendBatchValues,
+      removeBatchValues,
       removeAt,
       undo,
       addColor,
@@ -1661,6 +1732,9 @@
 
     function renderColorButtons(container) {
       state.colors.forEach(color => {
+        const card = document.createElement('div');
+        card.className = 'color-card';
+
         const button = document.createElement('button');
         button.className = 'color-button';
         button.type = 'button';
@@ -1675,7 +1749,26 @@
           ? `数字键 ${color.value}`
           : `映射值 ${color.value}（鼠标点击）`;
         button.append(name, mapping);
-        container.append(button);
+
+        const quickRow = document.createElement('div');
+        quickRow.className = 'color-quick-row';
+        [2, 3, 5, 10, -1, -2].forEach(delta => {
+          const quickButton = document.createElement('button');
+          quickButton.className = `color-quick-button${delta < 0 ? ' is-remove' : ''}`;
+          quickButton.type = 'button';
+          quickButton.dataset.value = String(color.value);
+          quickButton.dataset.delta = String(delta);
+          quickButton.textContent = delta > 0 ? `+${delta}` : String(delta);
+          quickButton.title = `${delta > 0 ? '追加' : '删除'} ${Math.abs(delta)} 个${color.name}`;
+          quickButton.setAttribute(
+            'aria-label',
+            `${delta > 0 ? '追加' : '删除'} ${Math.abs(delta)} 个${color.name}乘客`
+          );
+          quickRow.append(quickButton);
+        });
+
+        card.append(button, quickRow);
+        container.append(card);
       });
 
       const addButton = document.createElement('button');
@@ -2125,6 +2218,14 @@
 
       if (target.matches('.color-button[data-value]')) {
         updateState(appendValue(state, state.activeStage, Number(target.dataset.value)));
+      } else if (target.matches('.color-quick-button[data-value][data-delta]')) {
+        const value = Number(target.dataset.value);
+        const delta = Number(target.dataset.delta);
+        if (delta > 0) {
+          updateState(appendBatchValues(state, state.activeStage, Array(delta).fill(value)));
+        } else {
+          updateState(removeBatchValues(state, state.activeStage, value, Math.abs(delta)));
+        }
       } else if (target.matches('.sequence-chip[data-index]')) {
         updateState(removeAt(state, state.activeStage, Number(target.dataset.index)));
       } else if (target.matches('[data-action="undo"]')) {
