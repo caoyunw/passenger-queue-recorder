@@ -3316,7 +3316,7 @@
         hotspotVehicle.className = 'hotspot-marker-vehicle';
         hotspotVehicle.textContent = hotspot.vehicleId > 0 ? `#${hotspot.vehicleId}` : '填ID';
         marker.title = hotspot.vehicleId > 0
-          ? `H${hotspot.id}：点击记录车辆 #${hotspot.vehicleId}`
+          ? `H${hotspot.id}：点击记录选车 #${hotspot.vehicleId}`
           : `H${hotspot.id}：点击定位，下方填写车辆 id`;
         marker.append(hotspotIndex, hotspotVehicle);
         wrap.append(marker);
@@ -3338,8 +3338,8 @@
       const note = document.createElement('p');
       note.className = 'script-active-hotspot-note';
       note.textContent = activeHotspot
-        ? `当前选中 H${activeHotspot.id} / ${activeHotspot.vehicleId > 0 ? `车辆 #${activeHotspot.vehicleId}` : '待填写车辆 id'}。图上同编号热区已高亮。`
-        : '提示：点击截图上的 H 编号定位热区；未填 id 的热区只定位，已填 id 的热区会记录选车。';
+        ? `当前编辑热区 H${activeHotspot.id} / ${activeHotspot.vehicleId > 0 ? `车辆 #${activeHotspot.vehicleId}` : '待填写车辆 id'}。图上同编号热区已高亮。`
+        : '提示：点击截图上的 H 编号定位热区；未填 id 的热区只定位，已填 id 的热区会记录到操作批次。';
       container.append(note);
       const toolbar = document.createElement('div');
       toolbar.className = 'action-row';
@@ -3405,8 +3405,8 @@
         selectButton.dataset.action = 'select-script-vehicle';
         selectButton.dataset.vehicleId = String(hotspot.vehicleId);
         selectButton.dataset.hotspotId = String(hotspot.id);
-        selectButton.textContent = '选车';
-        selectButton.title = '会先保存当前热区字段，再记录选车';
+        selectButton.textContent = '记录选车';
+        selectButton.title = '会先保存当前热区字段，再写入操作批次的本批选择车辆';
         const deleteButton = document.createElement('button');
         deleteButton.className = 'action-button danger';
         deleteButton.type = 'button';
@@ -3462,7 +3462,7 @@
       if (state.script.batches.length === 0) {
         const empty = document.createElement('p');
         empty.className = 'empty-sequence';
-        empty.textContent = '还没有批次记录。点击截图热区选车，修正剩余座位后记录本批次。';
+        empty.textContent = '还没有批次记录。点击截图热区记录选车，修正剩余座位后记录本批次。';
         container.append(empty);
         return;
       }
@@ -3583,7 +3583,7 @@
               <section class="panel" aria-labelledby="scriptSlotsTitle">
                 <p class="panel-label">01 / CURRENT SLOTS</p>
                 <h2 id="scriptSlotsTitle">当前车位状态</h2>
-                <p class="empty-sequence">点击下方截图热区选车后，新车会进入最靠左空车位。</p>
+                <p class="empty-sequence">点击下方截图热区记录选车后，新车会进入最靠左空车位。</p>
                 <div class="script-slots"></div>
               </section>
 

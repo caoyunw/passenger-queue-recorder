@@ -1018,6 +1018,7 @@
           equal(app.getState().script.activeHotspotId, 1, '点击未填 id 热区未定位到对应列表');
           equal(app.getState().script.pending.selectedVehicleIds, [], '点击未填 id 热区不应记录车辆');
           assert(appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"]').classList.contains('is-active'), '对应热区列表未高亮');
+          assert(appDocument.querySelector('.script-active-hotspot-note').textContent.includes('当前编辑热区 H1'), '热区定位提示不应写成选车');
           appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]').click();
           equal(app.getState().script.activeHotspotId, 2, '点击已填 id 热区未定位到对应列表');
           equal(app.getState().script.pending.selectedVehicleIds, [1], '点击已填 id 热区未记录车辆');
@@ -1048,6 +1049,7 @@
           assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('#1'), '保存后截图热区未显示车辆 id');
 
           appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] [data-action="select-script-vehicle"]').click();
+          assert(appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] [data-action="select-script-vehicle"]').textContent.includes('记录选车'), '操作批次按钮应明确写为记录选车');
           equal(app.getState().script.pending.selectedVehicleIds, [1], '保存后列表选车按钮未记录车辆');
           app.updateState({
             ...app.getState(),
