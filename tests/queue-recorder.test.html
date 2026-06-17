@@ -1075,6 +1075,42 @@
           equal(app.getState().script.pending.selectedVehicleIds, [1], '未先点保存时，选车按钮未读取当前 id 并记录车辆');
         });
 
+        test('热区列表支持一键保存所有已编辑字段', () => {
+          let hotspotState = core.importScriptVehicleTable(
+            { ...core.createInitialState(), activeStage: 'script' },
+            '1\t1\t4\t1\t\t\n2\t2\t4\t1\t\t'
+          );
+          hotspotState = core.setScriptScreenshot(
+            hotspotState,
+            'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+          );
+          hotspotState = core.addScriptHotspot(hotspotState, {
+            vehicleId: 0,
+            xPercent: 30,
+            yPercent: 40,
+            widthPercent: 12,
+            heightPercent: 12,
+            source: 'ocr'
+          });
+          hotspotState = core.addScriptHotspot(hotspotState, {
+            vehicleId: 0,
+            xPercent: 60,
+            yPercent: 40,
+            widthPercent: 12,
+            heightPercent: 12,
+            source: 'ocr'
+          });
+          app.updateState(hotspotState);
+          appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] .script-hotspot-field[data-hotspot-field="vehicleId"]').value = '1';
+          appDocument.querySelector('.script-list-card[data-script-hotspot-card="2"] .script-hotspot-field[data-hotspot-field="vehicleId"]').value = '2';
+          const saveAllButton = appDocument.querySelector('[data-action="save-all-script-hotspots"]');
+          assert(saveAllButton, '缺少一键保存热区按钮');
+          saveAllButton.click();
+          equal(app.getState().script.hotspots.map(hotspot => hotspot.vehicleId), [1, 2], '一键保存未写入所有热区 id');
+          assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('#1'), '一键保存后 H1 未同步到截图');
+          assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]').textContent.includes('#2'), '一键保存后 H2 未同步到截图');
+        });
+
         const restoreRightState = {
           ...core.appendValue(core.createInitialState(), 'right', 3),
           activeStage: 'right'

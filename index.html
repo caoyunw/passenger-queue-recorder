@@ -3341,6 +3341,16 @@
         ? `当前选中 H${activeHotspot.id} / ${activeHotspot.vehicleId > 0 ? `车辆 #${activeHotspot.vehicleId}` : '待填写车辆 id'}。图上同编号热区已高亮。`
         : '提示：点击截图上的 H 编号定位热区；未填 id 的热区只定位，已填 id 的热区会记录选车。';
       container.append(note);
+      const toolbar = document.createElement('div');
+      toolbar.className = 'action-row';
+      const saveAllButton = document.createElement('button');
+      saveAllButton.className = 'action-button primary';
+      saveAllButton.type = 'button';
+      saveAllButton.dataset.action = 'save-all-script-hotspots';
+      saveAllButton.textContent = '一键保存';
+      saveAllButton.title = '保存当前列表中所有热区字段';
+      toolbar.append(saveAllButton);
+      container.append(toolbar);
 
       state.script.hotspots.forEach(hotspot => {
         const isActive = hotspot.id === state.script.activeHotspotId;
@@ -3991,10 +4001,8 @@
       colorName.focus();
     }
 
-    function getScriptHotspotFieldUpdates(hotspotId) {
-      if (!Number.isSafeInteger(hotspotId)) return null;
-      const card = workspace.querySelector(`.script-list-card[data-script-hotspot-card="${hotspotId}"]`);
-      if (!card) return null;
+    function getScriptHotspotFieldUpdatesFromCard(card) {
+      if (!(card instanceof Element)) return null;
       const updates = {};
       card.querySelectorAll('.script-hotspot-field[data-hotspot-field]').forEach(input => {
         updates[input.dataset.hotspotField] = Number(input.value);
@@ -4002,9 +4010,26 @@
       return updates;
     }
 
+    function getScriptHotspotFieldUpdates(hotspotId) {
+      if (!Number.isSafeInteger(hotspotId)) return null;
+      const card = workspace.querySelector(`.script-list-card[data-script-hotspot-card="${hotspotId}"]`);
+      return getScriptHotspotFieldUpdatesFromCard(card);
+    }
+
     function saveScriptHotspotFromFields(currentState, hotspotId) {
       const updates = getScriptHotspotFieldUpdates(hotspotId);
       return updates ? updateScriptHotspot(currentState, hotspotId, updates) : currentState;
+    }
+
+    function saveAllScriptHotspotsFromFields(currentState) {
+      return [...workspace.querySelectorAll('.script-list-card[data-script-hotspot-card]')]
+        .reduce((nextState, card) => {
+          const hotspotId = Number(card.dataset.scriptHotspotCard);
+          const updates = getScriptHotspotFieldUpdatesFromCard(card);
+          return Number.isSafeInteger(hotspotId) && updates
+            ? updateScriptHotspot(nextState, hotspotId, updates)
+            : nextState;
+        }, currentState);
     }
 
     stageNav.addEventListener('click', event => {
@@ -4108,6 +4133,8 @@
         updateState(setScriptActiveHotspot(state, Number(target.dataset.hotspotId)));
       } else if (target.matches('[data-action="save-script-hotspot"][data-hotspot-id]')) {
         updateState(saveScriptHotspotFromFields(state, Number(target.dataset.hotspotId)));
+      } else if (target.matches('[data-action="save-all-script-hotspots"]')) {
+        updateState(saveAllScriptHotspotsFromFields(state));
       } else if (target.matches('[data-action="select-script-vehicle"][data-vehicle-id]')) {
         const hotspotId = target.dataset.hotspotId ? Number(target.dataset.hotspotId) : null;
         const savedState = hotspotId === null ? state : saveScriptHotspotFromFields(state, hotspotId);
