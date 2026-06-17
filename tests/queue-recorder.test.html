@@ -106,6 +106,7 @@
       screenshotDataUrl: '',
       hotspots: [],
       nextHotspotId: 1,
+      activeHotspotId: null,
       slots: [null, null, null, null],
       batches: [],
       pending: {
@@ -596,11 +597,16 @@
           });
           equal(core.findScriptHotspotAt(state, 50, 40).vehicleId, 1, '热区中心未命中');
           equal(core.findScriptHotspotAt(state, 61, 40), null, '热区外不应命中');
+          equal(state.script.activeHotspotId, 1, '新增热区后未选中当前热区');
           state = core.updateScriptHotspot(state, 1, { vehicleId: 2, xPercent: 25 });
+          equal(state.script.activeHotspotId, 1, '编辑热区后未保持当前热区');
           equal(state.script.hotspots[0].vehicleId, 2, '热区车辆 id 未修正');
           equal(state.script.hotspots[0].xPercent, 25, '热区 x 坐标未修正');
+          state = core.setScriptActiveHotspot(state, 1);
+          equal(state.script.activeHotspotId, 1, '手动选中热区失败');
           state = core.deleteScriptHotspot(state, 1);
           equal(state.script.hotspots, [], '热区未删除');
+          equal(state.script.activeHotspotId, null, '删除当前热区后未清空选中状态');
         });
 
         test('OCR 未识别 id 时仍生成可修正热区，修正后可点击记录车辆', () => {
@@ -617,6 +623,7 @@
           equal(state.script.hotspots[0].vehicleId, 0, '占位热区应允许待修正 id');
           state = core.updateScriptHotspot(state, 1, { vehicleId: 1 });
           state = core.selectScriptVehicleAt(state, 42, 36);
+          equal(state.script.activeHotspotId, 1, '点击热区记录车辆时未同步选中热区');
           equal(state.script.pending.selectedVehicleIds, [1], '修正热区后点击未记录车辆');
           equal(state.script.pending.enteredSlots, [{ vehicleId: 1, slot: 1 }], '修正热区后入位错误');
         });
@@ -981,6 +988,39 @@
           appDocument.querySelector('[data-action="import-script-vehicles"]').click();
           equal(app.getState().script.vehicles[0].id, 1, '页面未导入车辆表');
           assert(appDocument.querySelector('.script-report').textContent.includes('批次时间线'), '页面未渲染剧本报告');
+
+          let hotspotState = core.setScriptScreenshot(
+            app.getState(),
+            'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+          );
+          hotspotState = core.addScriptHotspot(hotspotState, {
+            vehicleId: 0,
+            xPercent: 30,
+            yPercent: 40,
+            widthPercent: 12,
+            heightPercent: 12,
+            source: 'ocr'
+          });
+          hotspotState = core.addScriptHotspot(hotspotState, {
+            vehicleId: 1,
+            xPercent: 60,
+            yPercent: 40,
+            widthPercent: 12,
+            heightPercent: 12,
+            source: 'manual'
+          });
+          app.updateState(hotspotState);
+          const blankMarker = appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]');
+          const vehicleMarker = appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]');
+          assert(blankMarker && blankMarker.textContent.includes('H1') && blankMarker.textContent.includes('ID'), '未填 id 热区缺少可对照编号');
+          assert(vehicleMarker && vehicleMarker.textContent.includes('H2') && vehicleMarker.textContent.includes('#1'), '已填 id 热区缺少车辆编号');
+          blankMarker.click();
+          equal(app.getState().script.activeHotspotId, 1, '点击未填 id 热区未定位到对应列表');
+          equal(app.getState().script.pending.selectedVehicleIds, [], '点击未填 id 热区不应记录车辆');
+          assert(appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"]').classList.contains('is-active'), '对应热区列表未高亮');
+          appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]').click();
+          equal(app.getState().script.activeHotspotId, 2, '点击已填 id 热区未定位到对应列表');
+          equal(app.getState().script.pending.selectedVehicleIds, [1], '点击已填 id 热区未记录车辆');
         });
 
         const restoreRightState = {
