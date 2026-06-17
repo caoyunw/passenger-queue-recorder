@@ -1259,6 +1259,10 @@
       };
     }
 
+    function appendPendingText(current, next) {
+      return current ? `${current},${next}` : next;
+    }
+
     function addVehicle(state, colorValue, capacity) {
       if (!isValidState(state)
         || !isMappedValue(state, colorValue)
@@ -1277,6 +1281,8 @@
         enteredStep: state.parking.logs.length + 1
       };
 
+      const vehicleLabel = formatVehicle(state, vehicle);
+      const entryLabel = `${vehicleLabel}->${slotIndex + 1}`;
       const slots = state.parking.slots.map((slot, index) => index === slotIndex ? vehicle : slot);
       return {
         ...state,
@@ -1286,8 +1292,8 @@
           nextVehicleId: state.parking.nextVehicleId + 1,
           pending: {
             ...state.parking.pending,
-            selectedVehicle: formatVehicle(state, vehicle),
-            enteredSlot: String(slotIndex + 1)
+            selectedVehicle: appendPendingText(state.parking.pending.selectedVehicle, vehicleLabel),
+            enteredSlot: appendPendingText(state.parking.pending.enteredSlot, entryLabel)
           }
         }
       };
@@ -1403,7 +1409,7 @@
     }
 
     function formatParkingLogsText(logs) {
-      const header = '步骤\t选择车辆\t进入车位\t1号车位\t2号车位\t3号车位\t4号车位\t开走车辆\t占位时长\t备注';
+      const header = '批次\t本批次选择车辆\t进入车位顺序\t1号车位\t2号车位\t3号车位\t4号车位\t开走车辆\t占位时长\t备注';
       const rows = logs.map(log => [
         log.step,
         log.selectedVehicle,
@@ -1958,7 +1964,7 @@
       if (state.parking.logs.length === 0) {
         const empty = document.createElement('p');
         empty.className = 'empty-sequence';
-        empty.textContent = '尚未记录操作。选择车辆并确认车位状态后，点击“记录本步”。';
+        empty.textContent = '尚未记录操作。选择车辆并确认车位状态后，点击“记录本批次”。';
         container.append(empty);
         return;
       }
@@ -1968,9 +1974,9 @@
       table.innerHTML = `
         <thead>
           <tr>
-            <th>步骤</th>
-            <th>选择车辆</th>
-            <th>进入车位</th>
+            <th>批次</th>
+            <th>本批次选择车辆</th>
+            <th>进入车位顺序</th>
             <th>1号车位</th>
             <th>2号车位</th>
             <th>3号车位</th>
@@ -2112,14 +2118,14 @@
 
           <section class="panel" aria-labelledby="parkingRecordTitle">
             <p class="panel-label">03 / SNAPSHOT</p>
-            <h2 id="parkingRecordTitle">记录本步</h2>
+            <h2 id="parkingRecordTitle">记录本批次</h2>
             <textarea id="parkingNote" class="parking-note" placeholder="备注，例如：红车先吃 2 人"></textarea>
             <div class="game-name-grid">
               <input id="parkingLevelNumber" class="game-name-input" type="text" inputmode="numeric" autocomplete="off" placeholder="第几关">
               <input id="parkingAttemptNumber" class="game-name-input" type="text" inputmode="numeric" autocomplete="off" placeholder="第几局">
             </div>
             <div class="parking-footer">
-              <button class="action-button primary" type="button" data-action="record-parking-step">记录本步</button>
+              <button class="action-button primary" type="button" data-action="record-parking-step">记录本批次</button>
               <button class="action-button secondary" type="button" data-action="save-parking-game">保存本局记录</button>
               <button class="action-button secondary" type="button" data-action="copy-parking-log">复制日志</button>
               <button class="action-button danger" type="button" data-action="clear-parking">清空车位记录</button>

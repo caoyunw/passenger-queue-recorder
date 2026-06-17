@@ -470,32 +470,44 @@
           equal(state.parking.slots[0], { id: 3, colorValue: 3, capacity: 10, remaining: 10, enteredStep: 1 }, '新车应复用 1 号空位');
         });
 
-        test('车位记录生成飞书可粘贴详细日志', () => {
+        test('parking batch log exports Feishu table text', () => {
           let state = core.createInitialState();
           state = core.addVehicle(state, 1, 4);
           state = core.updateVehicleRemaining(state, 0, 2);
-          state = core.recordParkingStep(state, '红车先吃 2 人');
+          state = core.recordParkingStep(state, '\u7ea2\u8f66\u5148\u5403 2 \u4eba');
           state = core.addVehicle(state, 3, 6);
           state = core.departVehicle(state, 0);
           state = core.updateVehicleRemaining(state, 1, 5);
           state = core.recordParkingStep(state, '');
 
-          equal(state.parking.logs.length, 2, '日志数量错误');
-          equal(state.parking.logs[0].selectedVehicle, '红色4', '第一步选择车辆错误');
-          equal(state.parking.logs[0].enteredSlot, '1', '第一步进入车位错误');
-          equal(state.parking.logs[1].departedVehicles, '红色4', '开走车辆记录错误');
-          equal(state.parking.logs[1].occupancyDurations, '红色4：1→2，共2步', '占位时长记录错误');
+          equal(state.parking.logs.length, 2, 'log count should be 2');
+          equal(state.parking.logs[0].selectedVehicle, '\u7ea2\u82724', 'first batch selected vehicle mismatch');
+          equal(state.parking.logs[0].enteredSlot, '\u7ea2\u82724->1', 'first batch entry order mismatch');
+          equal(state.parking.logs[1].departedVehicles, '\u7ea2\u82724', 'departed vehicle mismatch');
+          equal(state.parking.logs[1].occupancyDurations, '\u7ea2\u82724\uff1a1\u21922\uff0c\u51712\u6b65', 'occupancy duration mismatch');
           equal(
             core.getParkingLogText(state).split('\n'),
             [
-              '步骤\t选择车辆\t进入车位\t1号车位\t2号车位\t3号车位\t4号车位\t开走车辆\t占位时长\t备注',
-              '1\t红色4\t1\t红色4剩2\t空\t空\t空\t\t\t红车先吃 2 人',
-              '2\t蓝色6\t2\t空\t蓝色6剩5\t空\t空\t红色4\t红色4：1→2，共2步\t'
+              '\u6279\u6b21\t\u672c\u6279\u6b21\u9009\u62e9\u8f66\u8f86\t\u8fdb\u5165\u8f66\u4f4d\u987a\u5e8f\t1\u53f7\u8f66\u4f4d\t2\u53f7\u8f66\u4f4d\t3\u53f7\u8f66\u4f4d\t4\u53f7\u8f66\u4f4d\t\u5f00\u8d70\u8f66\u8f86\t\u5360\u4f4d\u65f6\u957f\t\u5907\u6ce8',
+              '1\t\u7ea2\u82724\t\u7ea2\u82724->1\t\u7ea2\u82724\u52692\t\u7a7a\t\u7a7a\t\u7a7a\t\t\t\u7ea2\u8f66\u5148\u5403 2 \u4eba',
+              '2\t\u84dd\u82726\t\u84dd\u82726->2\t\u7a7a\t\u84dd\u82726\u52695\t\u7a7a\t\u7a7a\t\u7ea2\u82724\t\u7ea2\u82724\uff1a1\u21922\uff0c\u51712\u6b65\t'
             ],
-            '导出日志错误'
+            'exported batch log text mismatch'
           );
         });
 
+        test('parking batch can include multiple selected vehicles before one snapshot', () => {
+          let state = core.createInitialState();
+          state = core.addVehicle(state, 1, 4);
+          state = core.addVehicle(state, 3, 6);
+          state = core.updateVehicleRemaining(state, 0, 2);
+          state = core.updateVehicleRemaining(state, 1, 5);
+          state = core.recordParkingStep(state, '\u4e00\u6279\u4e24\u8f66');
+          equal(state.parking.logs.length, 1, 'same batch should create one log');
+          equal(state.parking.logs[0].selectedVehicle, '\u7ea2\u82724,\u84dd\u82726', 'batch selected vehicle order mismatch');
+          equal(state.parking.logs[0].enteredSlot, '\u7ea2\u82724->1,\u84dd\u82726->2', 'batch entry order mismatch');
+          equal(core.getParkingLogText(state).split('\n')[1], '1\t\u7ea2\u82724,\u84dd\u82726\t\u7ea2\u82724->1,\u84dd\u82726->2\t\u7ea2\u82724\u52692\t\u84dd\u82726\u52695\t\u7a7a\t\u7a7a\t\t\t\u4e00\u6279\u4e24\u8f66', 'batch export mismatch');
+        });
         test('跨多步开走车辆时记录占用车位步数', () => {
           let state = core.createInitialState();
           state = core.addVehicle(state, 1, 4);
@@ -527,7 +539,7 @@
           equal(state.parking.savedGames.length, 1, '清空当前车位不应删除已保存单局');
           state = core.loadParkingGame(state, 1);
           equal(state.parking.logs[0].note, '第一局', '加载单局记录失败');
-          equal(core.getSavedParkingGameText(state, 1).split('\n')[1], '1\t红色4\t1\t红色4剩2\t空\t空\t空\t\t\t第一局', '已保存单局导出错误');
+          equal(core.getSavedParkingGameText(state, 1).split('\n')[1], '1\t\u7ea2\u82724\t\u7ea2\u82724->1\t\u7ea2\u82724\u52692\t\u7a7a\t\u7a7a\t\u7a7a\t\t\t\u7b2c\u4e00\u5c40', 'saved game export mismatch');
           state = core.deleteParkingGame(state, 1);
           equal(state.parking.savedGames, [], '删除单局记录失败');
         });
@@ -819,7 +831,9 @@
           equal(app.getState().activeStage, 'parking', '未进入车位记录页面');
           assert(!appDocument.querySelector('#parkingColor'), '车位记录不应再使用颜色下拉框');
           appDocument.querySelector('[data-action="add-vehicle"][data-color-value="1"][data-capacity="4"]').click();
+          appDocument.querySelector('[data-action="add-vehicle"][data-color-value="3"][data-capacity="6"]').click();
           equal(app.getState().parking.slots[0].remaining, 4, '车辆未进入 1 号位');
+          equal(app.getState().parking.slots[1].remaining, 6, 'second vehicle should enter slot 2');
           const occupiedSlot = appDocument.querySelector('.parking-slot[data-slot-index="0"]');
           assert(occupiedSlot.style.getPropertyValue('--slot-color'), '车位未显示车辆颜色');
           assert(occupiedSlot.classList.contains('is-occupied'), '占用车位缺少 occupied 状态');
@@ -829,6 +843,8 @@
           equal(app.getState().parking.slots[0].remaining, 2, '剩余座位未通过页面更新');
           appDocument.querySelector('#parkingNote').value = '页面记录';
           appDocument.querySelector('[data-action="record-parking-step"]').click();
+          equal(app.getState().parking.logs[0].selectedVehicle, '\u7ea2\u82724,\u84dd\u82726', 'page batch selected vehicle order mismatch');
+          equal(app.getState().parking.logs[0].enteredSlot, '\u7ea2\u82724->1,\u84dd\u82726->2', 'page batch entry order mismatch');
           equal(app.getState().parking.logs[0].slots[0], '红色4剩2', '页面日志车位状态错误');
           assert(appDocument.querySelector('.parking-log-table').textContent.includes('页面记录'), '页面日志未渲染备注');
           appDocument.querySelector('#parkingLevelNumber').value = '3';
