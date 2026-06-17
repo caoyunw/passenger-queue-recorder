@@ -1023,6 +1023,58 @@
           equal(app.getState().script.pending.selectedVehicleIds, [1], '点击已填 id 热区未记录车辆');
         });
 
+        test('热区手动改 id 后可保存，并通过列表或截图选车', () => {
+          appDocument.querySelector('.stage-button[data-stage="script"]').click();
+          let hotspotState = core.importScriptVehicleTable(app.getState(), '1\t1\t4\t1\t\t');
+          hotspotState = core.setScriptScreenshot(
+            hotspotState,
+            'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+          );
+          hotspotState = core.addScriptHotspot(hotspotState, {
+            vehicleId: 0,
+            xPercent: 35,
+            yPercent: 45,
+            widthPercent: 12,
+            heightPercent: 12,
+            source: 'ocr'
+          });
+          app.updateState(hotspotState);
+          const idInput = appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] .script-hotspot-field[data-hotspot-field="vehicleId"]');
+          idInput.value = '1';
+          const saveButton = appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] [data-action="save-script-hotspot"]');
+          assert(saveButton, '热区列表缺少保存按钮');
+          saveButton.click();
+          equal(app.getState().script.hotspots[0].vehicleId, 1, '保存按钮未写入修正后的车辆 id');
+          assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('#1'), '保存后截图热区未显示车辆 id');
+
+          appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] [data-action="select-script-vehicle"]').click();
+          equal(app.getState().script.pending.selectedVehicleIds, [1], '保存后列表选车按钮未记录车辆');
+          app.updateState({
+            ...app.getState(),
+            script: {
+              ...app.getState().script,
+              slots: [null, null, null, null],
+              pending: { selectedVehicleIds: [], enteredSlots: [], departedVehicleIds: [] }
+            }
+          });
+          appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').click();
+          equal(app.getState().script.pending.selectedVehicleIds, [1], '保存后点击截图热区未记录车辆');
+
+          const resetHotspotState = core.updateScriptHotspot(app.getState(), 1, { vehicleId: 0 });
+          app.updateState({
+            ...resetHotspotState,
+            script: {
+              ...resetHotspotState.script,
+              slots: [null, null, null, null],
+              pending: { selectedVehicleIds: [], enteredSlots: [], departedVehicleIds: [] }
+            }
+          });
+          const directSelectInput = appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] .script-hotspot-field[data-hotspot-field="vehicleId"]');
+          directSelectInput.value = '1';
+          appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] [data-action="select-script-vehicle"]').click();
+          equal(app.getState().script.pending.selectedVehicleIds, [1], '未先点保存时，选车按钮未读取当前 id 并记录车辆');
+        });
+
         const restoreRightState = {
           ...core.appendValue(core.createInitialState(), 'right', 3),
           activeStage: 'right'

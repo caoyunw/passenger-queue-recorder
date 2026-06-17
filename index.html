@@ -3383,21 +3383,27 @@
         focusButton.dataset.action = 'focus-script-hotspot';
         focusButton.dataset.hotspotId = String(hotspot.id);
         focusButton.textContent = '定位';
+        const saveButton = document.createElement('button');
+        saveButton.className = 'action-button secondary';
+        saveButton.type = 'button';
+        saveButton.dataset.action = 'save-script-hotspot';
+        saveButton.dataset.hotspotId = String(hotspot.id);
+        saveButton.textContent = '保存';
         const selectButton = document.createElement('button');
         selectButton.className = 'action-button secondary';
         selectButton.type = 'button';
         selectButton.dataset.action = 'select-script-vehicle';
         selectButton.dataset.vehicleId = String(hotspot.vehicleId);
         selectButton.dataset.hotspotId = String(hotspot.id);
-        selectButton.disabled = hotspot.vehicleId <= 0;
         selectButton.textContent = '选车';
+        selectButton.title = '会先保存当前热区字段，再记录选车';
         const deleteButton = document.createElement('button');
         deleteButton.className = 'action-button danger';
         deleteButton.type = 'button';
         deleteButton.dataset.action = 'delete-script-hotspot';
         deleteButton.dataset.hotspotId = String(hotspot.id);
         deleteButton.textContent = '删除';
-        actions.append(focusButton, selectButton, deleteButton);
+        actions.append(focusButton, saveButton, selectButton, deleteButton);
         card.append(body, actions);
         container.append(card);
       });
@@ -3985,6 +3991,22 @@
       colorName.focus();
     }
 
+    function getScriptHotspotFieldUpdates(hotspotId) {
+      if (!Number.isSafeInteger(hotspotId)) return null;
+      const card = workspace.querySelector(`.script-list-card[data-script-hotspot-card="${hotspotId}"]`);
+      if (!card) return null;
+      const updates = {};
+      card.querySelectorAll('.script-hotspot-field[data-hotspot-field]').forEach(input => {
+        updates[input.dataset.hotspotField] = Number(input.value);
+      });
+      return updates;
+    }
+
+    function saveScriptHotspotFromFields(currentState, hotspotId) {
+      const updates = getScriptHotspotFieldUpdates(hotspotId);
+      return updates ? updateScriptHotspot(currentState, hotspotId, updates) : currentState;
+    }
+
     stageNav.addEventListener('click', event => {
       const button = event.target.closest('.stage-button[data-stage]');
       if (!button) return;
@@ -4084,11 +4106,15 @@
         updateState(nextState);
       } else if (target.matches('[data-action="focus-script-hotspot"][data-hotspot-id]')) {
         updateState(setScriptActiveHotspot(state, Number(target.dataset.hotspotId)));
+      } else if (target.matches('[data-action="save-script-hotspot"][data-hotspot-id]')) {
+        updateState(saveScriptHotspotFromFields(state, Number(target.dataset.hotspotId)));
       } else if (target.matches('[data-action="select-script-vehicle"][data-vehicle-id]')) {
-        const focusedState = target.dataset.hotspotId
-          ? setScriptActiveHotspot(state, Number(target.dataset.hotspotId))
-          : state;
-        updateState(selectScriptVehicle(focusedState, Number(target.dataset.vehicleId)));
+        const hotspotId = target.dataset.hotspotId ? Number(target.dataset.hotspotId) : null;
+        const savedState = hotspotId === null ? state : saveScriptHotspotFromFields(state, hotspotId);
+        const focusedState = hotspotId === null ? savedState : setScriptActiveHotspot(savedState, hotspotId);
+        const hotspot = hotspotId === null ? null : focusedState.script.hotspots.find(item => item.id === hotspotId);
+        const vehicleId = hotspot ? hotspot.vehicleId : Number(target.dataset.vehicleId);
+        updateState(selectScriptVehicle(focusedState, vehicleId));
       } else if (target.matches('[data-action="delete-script-hotspot"][data-hotspot-id]')) {
         updateState(deleteScriptHotspot(state, Number(target.dataset.hotspotId)));
       } else if (target.matches('[data-action="depart-script-slot"][data-slot-index]')) {
@@ -4117,10 +4143,6 @@
         updateState(updateVehicleRemaining(state, Number(target.dataset.slotIndex), Number(target.value)));
       } else if (target instanceof HTMLInputElement && target.matches('.script-remaining-input[data-slot-index]')) {
         updateState(updateScriptSlotRemaining(state, Number(target.dataset.slotIndex), Number(target.value)));
-      } else if (target instanceof HTMLInputElement && target.matches('.script-hotspot-field[data-hotspot-id][data-hotspot-field]')) {
-        updateState(updateScriptHotspot(state, Number(target.dataset.hotspotId), {
-          [target.dataset.hotspotField]: Number(target.value)
-        }));
       } else if (target instanceof HTMLInputElement && target.matches('#scriptLevelName')) {
         updateState(setScriptLevelName(state, target.value));
       } else if (target instanceof HTMLInputElement && target.matches('#scriptScreenshotFile') && target.files && target.files[0]) {
