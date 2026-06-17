@@ -962,6 +962,20 @@
       border-style: dashed;
     }
 
+    .script-hotspot-marker.is-editing {
+      border-style: dashed;
+    }
+
+    .script-hotspot-marker.is-saved {
+      background: rgba(54, 128, 92, 0.36);
+      border-color: #58d188;
+    }
+
+    .script-hotspot-marker.is-selected {
+      background: rgba(54, 128, 92, 0.72);
+      box-shadow: 0 0 0 3px #58d188, 0 0 0 6px rgba(0, 0, 0, 0.35);
+    }
+
     .hotspot-marker-index {
       padding: 1px 5px;
       color: var(--ink);
@@ -972,6 +986,17 @@
 
     .hotspot-marker-vehicle {
       white-space: nowrap;
+    }
+
+    .hotspot-marker-check {
+      display: inline-grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      color: var(--ink);
+      background: #58d188;
+      border-radius: 999px;
+      text-shadow: none;
     }
 
     .script-list {
@@ -1016,6 +1041,12 @@
       min-height: 34px;
       padding: 6px;
       border: 1px solid #899793;
+    }
+
+    .script-hotspot-fields input:disabled {
+      color: var(--muted);
+      background: #ebe7dd;
+      cursor: not-allowed;
     }
 
     .script-slots {
@@ -1304,7 +1335,7 @@
     const SCRIPT_KEYS = ['levelName', 'queuesText', 'vehicleTableText', 'vehicles', 'vehicleErrors', 'screenshotDataUrl', 'hotspots', 'nextHotspotId', 'activeHotspotId', 'slots', 'batches', 'pending', 'savedLevels', 'nextLevelId', 'ocrStatus', 'ocrError'];
     const SCRIPT_QUEUE_TEXT_KEYS = ['conveyor', 'left', 'right'];
     const SCRIPT_VEHICLE_KEYS = ['id', 'colorValue', 'capacity', 'depth', 'frontVehicleIds', 'backVehicleIds'];
-    const SCRIPT_HOTSPOT_KEYS = ['id', 'vehicleId', 'xPercent', 'yPercent', 'widthPercent', 'heightPercent', 'source', 'confidence'];
+    const SCRIPT_HOTSPOT_KEYS = ['id', 'vehicleId', 'xPercent', 'yPercent', 'widthPercent', 'heightPercent', 'source', 'confidence', 'status'];
     const SCRIPT_SLOT_KEYS = ['vehicleId', 'colorValue', 'capacity', 'remaining', 'enteredBatch'];
     const SCRIPT_BATCH_KEYS = ['batch', 'selectedVehicleIds', 'enteredSlots', 'slotSnapshots', 'departedVehicleIds', 'note'];
     const SCRIPT_ENTERED_SLOT_KEYS = ['vehicleId', 'slot'];
@@ -1962,7 +1993,8 @@
         widthPercent: Math.min(100, Math.max(1, Number(input.widthPercent) || 8)),
         heightPercent: Math.min(100, Math.max(1, Number(input.heightPercent) || 8)),
         source: input.source === 'ocr' ? 'ocr' : 'manual',
-        confidence: Number.isFinite(Number(input.confidence)) ? Number(input.confidence) : null
+        confidence: Number.isFinite(Number(input.confidence)) ? Number(input.confidence) : null,
+        status: input.status === 'saved' ? 'saved' : 'editing'
       };
     }
 
@@ -2104,7 +2136,9 @@
       const hotspot = findScriptHotspotAt(state, xPercent, yPercent);
       if (!hotspot) return state;
       const focusedState = setScriptActiveHotspot(state, hotspot.id);
-      return hotspot.vehicleId > 0 ? selectScriptVehicle(focusedState, hotspot.vehicleId) : focusedState;
+      return hotspot.status === 'saved' && hotspot.vehicleId > 0
+        ? selectScriptVehicle(focusedState, hotspot.vehicleId)
+        : focusedState;
     }
 
     function updateScriptSlotRemaining(state, slotIndex, remaining) {
@@ -2588,7 +2622,8 @@
         && hotspot.heightPercent > 0
         && hotspot.heightPercent <= 100
         && ['manual', 'ocr'].includes(hotspot.source)
-        && (hotspot.confidence === null || Number.isFinite(hotspot.confidence));
+        && (hotspot.confidence === null || Number.isFinite(hotspot.confidence))
+        && ['editing', 'saved'].includes(hotspot.status);
     }
 
     function isValidScriptSlot(slot, mappedValues) {
@@ -2740,11 +2775,26 @@
         && STAGES.includes(candidate.activeStage);
     }
 
+    function normalizeScriptHotspotsForCurrentVersion(hotspots) {
+      return Array.isArray(hotspots)
+        ? hotspots.map(hotspot => {
+          if (!hotspot || typeof hotspot !== 'object') return hotspot;
+          return {
+            ...hotspot,
+            status: hotspot.status === 'editing' || hotspot.status === 'saved'
+              ? hotspot.status
+              : (Number.isSafeInteger(hotspot.vehicleId) && hotspot.vehicleId > 0 ? 'saved' : 'editing')
+          };
+        })
+        : hotspots;
+    }
+
     function normalizeScriptForCurrentVersion(script) {
       if (!script || typeof script !== 'object') return createEmptyScript();
       const activeHotspotId = Number.isSafeInteger(script.activeHotspotId) && script.activeHotspotId > 0
         ? script.activeHotspotId
         : null;
+      const hotspots = normalizeScriptHotspotsForCurrentVersion(script.hotspots);
       const savedLevels = Array.isArray(script.savedLevels)
         ? script.savedLevels.map(level => {
           if (!level || typeof level !== 'object' || !level.data || typeof level.data !== 'object') return level;
@@ -2752,6 +2802,7 @@
             ...level,
             data: {
               ...level.data,
+              hotspots: normalizeScriptHotspotsForCurrentVersion(level.data.hotspots),
               activeHotspotId: Number.isSafeInteger(level.data.activeHotspotId) && level.data.activeHotspotId > 0
                 ? level.data.activeHotspotId
                 : null
@@ -2761,6 +2812,7 @@
         : script.savedLevels;
       return {
         ...script,
+        hotspots,
         activeHotspotId,
         savedLevels
       };
@@ -3296,8 +3348,10 @@
 
       state.script.hotspots.forEach(hotspot => {
         const isActive = hotspot.id === state.script.activeHotspotId;
+        const isSaved = hotspot.status === 'saved';
+        const isSelected = hotspot.vehicleId > 0 && state.script.slots.some(slot => slot && slot.vehicleId === hotspot.vehicleId);
         const marker = document.createElement('button');
-        marker.className = `script-hotspot-marker${isActive ? ' is-active' : ''}${hotspot.vehicleId > 0 ? '' : ' needs-id'}`;
+        marker.className = `script-hotspot-marker${isActive ? ' is-active' : ''}${hotspot.vehicleId > 0 ? '' : ' needs-id'}${isSaved ? ' is-saved' : ' is-editing'}${isSelected ? ' is-selected' : ''}`;
         marker.type = 'button';
         marker.dataset.action = 'activate-script-hotspot';
         marker.dataset.hotspotId = String(hotspot.id);
@@ -3315,10 +3369,16 @@
         const hotspotVehicle = document.createElement('span');
         hotspotVehicle.className = 'hotspot-marker-vehicle';
         hotspotVehicle.textContent = hotspot.vehicleId > 0 ? `#${hotspot.vehicleId}` : '填ID';
-        marker.title = hotspot.vehicleId > 0
+        marker.title = hotspot.vehicleId > 0 && isSaved
           ? `H${hotspot.id}：点击记录选车 #${hotspot.vehicleId}`
           : `H${hotspot.id}：点击定位，下方填写车辆 id`;
         marker.append(hotspotIndex, hotspotVehicle);
+        if (isSelected) {
+          const check = document.createElement('span');
+          check.className = 'hotspot-marker-check';
+          check.textContent = '✓';
+          marker.append(check);
+        }
         wrap.append(marker);
       });
       container.append(wrap);
@@ -3354,6 +3414,7 @@
 
       state.script.hotspots.forEach(hotspot => {
         const isActive = hotspot.id === state.script.activeHotspotId;
+        const isSaved = hotspot.status === 'saved';
         const card = document.createElement('article');
         card.className = `script-list-card${isActive ? ' is-active' : ''}`;
         card.dataset.scriptHotspotCard = String(hotspot.id);
@@ -3362,7 +3423,7 @@
         title.textContent = `H${hotspot.id} / ${hotspot.vehicleId > 0 ? `车辆 #${hotspot.vehicleId}` : '待填写车辆 id'}`;
         const meta = document.createElement('p');
         meta.className = 'empty-sequence';
-        meta.textContent = `${hotspot.source === 'ocr' ? 'OCR 预识别' : '手动标定'}${hotspot.confidence === null ? '' : `，置信度 ${Math.round(hotspot.confidence)}`}`;
+        meta.textContent = `${isSaved ? '保存状态：点击截图热区会记录选车' : '可编辑状态：点击截图热区只定位修改 id'} / ${hotspot.source === 'ocr' ? 'OCR 预识别' : '手动标定'}${hotspot.confidence === null ? '' : `，置信度 ${Math.round(hotspot.confidence)}`}`;
         const fields = document.createElement('div');
         fields.className = 'script-hotspot-fields';
         [
@@ -3382,6 +3443,7 @@
           input.dataset.hotspotId = String(hotspot.id);
           input.dataset.hotspotField = field;
           input.className = 'script-hotspot-field';
+          input.disabled = isSaved;
           fields.append(input);
         });
         body.append(title, meta, fields);
@@ -3399,6 +3461,14 @@
         saveButton.dataset.action = 'save-script-hotspot';
         saveButton.dataset.hotspotId = String(hotspot.id);
         saveButton.textContent = '保存';
+        saveButton.disabled = isSaved;
+        const editButton = document.createElement('button');
+        editButton.className = 'action-button secondary';
+        editButton.type = 'button';
+        editButton.dataset.action = 'edit-script-hotspot';
+        editButton.dataset.hotspotId = String(hotspot.id);
+        editButton.textContent = '编辑';
+        editButton.disabled = !isSaved;
         const selectButton = document.createElement('button');
         selectButton.className = 'action-button secondary';
         selectButton.type = 'button';
@@ -3406,14 +3476,15 @@
         selectButton.dataset.vehicleId = String(hotspot.vehicleId);
         selectButton.dataset.hotspotId = String(hotspot.id);
         selectButton.textContent = '记录选车';
-        selectButton.title = '会先保存当前热区字段，再写入操作批次的本批选择车辆';
+        selectButton.title = '写入操作批次的本批选择车辆';
+        selectButton.disabled = !isSaved || hotspot.vehicleId <= 0;
         const deleteButton = document.createElement('button');
         deleteButton.className = 'action-button danger';
         deleteButton.type = 'button';
         deleteButton.dataset.action = 'delete-script-hotspot';
         deleteButton.dataset.hotspotId = String(hotspot.id);
         deleteButton.textContent = '删除';
-        actions.append(focusButton, saveButton, selectButton, deleteButton);
+        actions.append(focusButton, saveButton, editButton, selectButton, deleteButton);
         card.append(body, actions);
         container.append(card);
       });
@@ -4018,7 +4089,7 @@
 
     function saveScriptHotspotFromFields(currentState, hotspotId) {
       const updates = getScriptHotspotFieldUpdates(hotspotId);
-      return updates ? updateScriptHotspot(currentState, hotspotId, updates) : currentState;
+      return updates ? updateScriptHotspot(currentState, hotspotId, { ...updates, status: 'saved' }) : currentState;
     }
 
     function saveAllScriptHotspotsFromFields(currentState) {
@@ -4027,7 +4098,7 @@
           const hotspotId = Number(card.dataset.scriptHotspotCard);
           const updates = getScriptHotspotFieldUpdatesFromCard(card);
           return Number.isSafeInteger(hotspotId) && updates
-            ? updateScriptHotspot(nextState, hotspotId, updates)
+            ? updateScriptHotspot(nextState, hotspotId, { ...updates, status: 'saved' })
             : nextState;
         }, currentState);
     }
@@ -4124,8 +4195,13 @@
       } else if (target.matches('[data-action="activate-script-hotspot"][data-hotspot-id]')) {
         const hotspotId = Number(target.dataset.hotspotId);
         const hotspot = state.script.hotspots.find(item => item.id === hotspotId);
+        if (hotspot && hotspot.status !== 'saved' && state.script.activeHotspotId === hotspotId) {
+          const idInput = workspace.querySelector(`.script-list-card[data-script-hotspot-card="${hotspotId}"] .script-hotspot-field[data-hotspot-field="vehicleId"]`);
+          if (idInput instanceof HTMLInputElement) idInput.focus();
+          return;
+        }
         let nextState = setScriptActiveHotspot(state, hotspotId);
-        if (hotspot && hotspot.vehicleId > 0) {
+        if (hotspot && hotspot.status === 'saved' && hotspot.vehicleId > 0) {
           nextState = selectScriptVehicle(nextState, hotspot.vehicleId);
         }
         updateState(nextState);
@@ -4133,13 +4209,18 @@
         updateState(setScriptActiveHotspot(state, Number(target.dataset.hotspotId)));
       } else if (target.matches('[data-action="save-script-hotspot"][data-hotspot-id]')) {
         updateState(saveScriptHotspotFromFields(state, Number(target.dataset.hotspotId)));
+      } else if (target.matches('[data-action="edit-script-hotspot"][data-hotspot-id]')) {
+        updateState(updateScriptHotspot(state, Number(target.dataset.hotspotId), { status: 'editing' }));
       } else if (target.matches('[data-action="save-all-script-hotspots"]')) {
         updateState(saveAllScriptHotspotsFromFields(state));
       } else if (target.matches('[data-action="select-script-vehicle"][data-vehicle-id]')) {
         const hotspotId = target.dataset.hotspotId ? Number(target.dataset.hotspotId) : null;
-        const savedState = hotspotId === null ? state : saveScriptHotspotFromFields(state, hotspotId);
-        const focusedState = hotspotId === null ? savedState : setScriptActiveHotspot(savedState, hotspotId);
+        const focusedState = hotspotId === null ? state : setScriptActiveHotspot(state, hotspotId);
         const hotspot = hotspotId === null ? null : focusedState.script.hotspots.find(item => item.id === hotspotId);
+        if (hotspot && hotspot.status !== 'saved') {
+          updateState(focusedState);
+          return;
+        }
         const vehicleId = hotspot ? hotspot.vehicleId : Number(target.dataset.vehicleId);
         updateState(selectScriptVehicle(focusedState, vehicleId));
       } else if (target.matches('[data-action="delete-script-hotspot"][data-hotspot-id]')) {
