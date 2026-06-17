@@ -603,6 +603,24 @@
           equal(state.script.hotspots, [], '热区未删除');
         });
 
+        test('OCR 未识别 id 时仍生成可修正热区，修正后可点击记录车辆', () => {
+          let state = core.importScriptVehicleTable(core.createInitialState(), '1\t1\t4\t1\t\t');
+          state = core.applyScriptOcrDetections(state, [{
+            vehicleId: 0,
+            xPercent: 42,
+            yPercent: 36,
+            widthPercent: 14,
+            heightPercent: 9,
+            confidence: null
+          }]);
+          equal(state.script.hotspots.length, 1, 'OCR 未生成占位热区');
+          equal(state.script.hotspots[0].vehicleId, 0, '占位热区应允许待修正 id');
+          state = core.updateScriptHotspot(state, 1, { vehicleId: 1 });
+          state = core.selectScriptVehicleAt(state, 42, 36);
+          equal(state.script.pending.selectedVehicleIds, [1], '修正热区后点击未记录车辆');
+          equal(state.script.pending.enteredSlots, [{ vehicleId: 1, slot: 1 }], '修正热区后入位错误');
+        });
+
         test('剧本还原点击热区生成批次并反推乘客消耗', () => {
           let state = core.createInitialState();
           state = core.appendBatchValues(state, 'conveyor', [1, 1, 1, 1, 3, 3]);
@@ -954,6 +972,9 @@
         test('剧本还原页面支持导入车辆表和生成报告', () => {
           appDocument.querySelector('.stage-button[data-stage="script"]').click();
           equal(app.getState().activeStage, 'script', '未进入剧本还原页面');
+          const leftStackTitles = [...appDocument.querySelectorAll('.script-left-stack h2')].map(title => title.textContent);
+          equal(leftStackTitles.slice(0, 2), ['当前车位状态', '停车场截图与热区'], '剧本还原左侧布局应先车位后截图');
+          assert(appDocument.querySelector('.script-right-stack #scriptBatchTitle'), '操作批次记录应在右侧栏');
           const tableInput = appDocument.querySelector('#scriptVehicleTable');
           assert(tableInput, '车辆表输入框缺失');
           tableInput.value = '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id\n1\t1\t4\t1\t\t';
