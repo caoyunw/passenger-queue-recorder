@@ -3808,7 +3808,6 @@
         const result = await window.Tesseract.recognize(state.script.screenshotDataUrl, 'eng');
         const size = await getImageNaturalSize(state.script.screenshotDataUrl);
         const ocrDetections = collectOcrDetections(result ? result.data : null, size.width, size.height);
-        const regionDetections = await detectScriptVehicleRegions(state.script.screenshotDataUrl);
         const detections = mergeOcrDetectionsWithRegions(ocrDetections, regionDetections);
         updateState(setScriptOcrStatus(applyScriptOcrDetections(state, detections), detections.length > 0 ? 'done' : 'error', detections.length > 0 ? '' : '未识别到车辆热区，可手动标定'));
       } catch (error) {
