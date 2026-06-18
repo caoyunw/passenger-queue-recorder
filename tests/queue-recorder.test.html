@@ -471,11 +471,13 @@
           state = core.appendValue(state, 'right', 4);
           state = { ...state, activeStage: 'right' };
           const colorsBeforeNextLevel = clone(state.colors);
-          state = core.startNextLevel(state);
-          equal(state.colors, colorsBeforeNextLevel, '颜色列表未完整保留');
-          equal(state.queues, EMPTY_SECTIONS, '队列未清空');
-          equal(state.histories, EMPTY_SECTIONS, '撤销历史未清空');
-          equal(state.activeStage, 'conveyor', '下一关应恢复到传送带阶段');
+          const nextState = core.startNextLevel(state);
+          equal(nextState.colors, colorsBeforeNextLevel, '颜色列表未完整保留');
+          equal(nextState.queues, EMPTY_SECTIONS, '队列未清空');
+          equal(nextState.histories, EMPTY_SECTIONS, '撤销历史未清空');
+          equal(nextState.activeStage, 'conveyor', '下一关应恢复到传送带阶段');
+          equal(nextState.simulation, state.simulation, '开始下一关不应丢失模拟器状态');
+          assert(core.saveState(nextState), '开始下一关后的状态应允许保存');
         });
 
         test('彻底重置恢复默认颜色和空队列', () => {
