@@ -623,6 +623,71 @@
           equal(parsed.errors, [], '合法 CSV 不应产生解析错误');
         });
 
+        test('立即结算模拟器按容量切分传送带并解析点击序列', () => {
+          const parsed = core.parseStableSimulationInput(core.createInitialState(), {
+            conveyorCapacity: '4',
+            passengerQueueText: '0,0,2,1,1,2',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0\n2\t2\t6\t0',
+            clickSequenceText: '1,2'
+          });
+          equal(parsed.errors, [], '合法输入不应产生错误');
+          equal(parsed.belt, [0, 0, 2, 1], '初始传送带切分错误');
+          equal(parsed.reserveQueue, [1, 2], '补充队列切分错误');
+          equal(parsed.clickSequence, [1, 2], '点击序列解析错误');
+        });
+
+        test('立即结算模拟器点击可满员车辆后上客并开走', () => {
+          const state = core.createInitialState();
+          const result = core.runStableSimulation(state, {
+            levelName: '第1关',
+            conveyorCapacity: '4',
+            passengerQueueText: '0,0,0,0,2,2',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0',
+            clickSequenceText: '1'
+          });
+          equal(result.errors, [], '合法模拟不应产生错误');
+          equal(result.steps.length, 1, '应生成一步日志');
+          equal(result.steps[0].enteredSlot, 1, '车辆应进入 1 号位');
+          equal(result.steps[0].consumption, [{ vehicleId: 1, count: 4 }], '上客统计错误');
+          equal(result.steps[0].departedVehicleIds, [1], '满员车辆应开走');
+          equal(result.finalSlots, [null, null, null, null], '开走后车位应为空');
+          equal(result.finalBelt, [2, 2], '传送带应剩余无法上车乘客');
+        });
+
+        test('立即结算模拟器同色多车按靠左车位优先上客', () => {
+          const result = core.runStableSimulation(core.createInitialState(), {
+            levelName: '',
+            conveyorCapacity: '6',
+            passengerQueueText: '0,0,0,0,0,0',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t0\t10\t0\n2\t0\t4\t0',
+            clickSequenceText: '1,2'
+          });
+          equal(result.steps[0].consumption, [{ vehicleId: 1, count: 6 }], '第一辆车应先吃 6 人');
+          equal(result.steps[1].consumption, [], '第二步没有新增乘客时不应让后车抢客');
+          equal(result.finalSlots[0].vehicleId, 1, '先进入的车应仍在 1 号位');
+          equal(result.finalSlots[0].remaining, 4, '先进入的车剩余座位错误');
+          equal(result.finalSlots[1].vehicleId, 2, '第二辆车应占 2 号位');
+        });
+
+        test('立即结算模拟器无空车位时记录警告', () => {
+          const result = core.runStableSimulation(core.createInitialState(), {
+            levelName: '',
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度',
+              '1\t0\t10\t0',
+              '2\t0\t10\t0',
+              '3\t0\t10\t0',
+              '4\t0\t10\t0',
+              '5\t0\t10\t0'
+            ].join('\n'),
+            clickSequenceText: '1,2,3,4,5'
+          });
+          assert(result.steps[4].warnings.some(warning => warning.includes('没有空车位')), '第 5 次点击应提示无空车位');
+          equal(result.finalSlots.map(slot => slot && slot.vehicleId), [1, 2, 3, 4], '无空车位时不应覆盖已有车位');
+        });
+
         test('OCR 数字只补充颜色块热区 id，不额外生成文字框热区', () => {
           const merged = core.mergeOcrDetectionsWithRegions([
             { vehicleId: 73, xPercent: 50, yPercent: 50, widthPercent: 4, heightPercent: 4, confidence: 88 },

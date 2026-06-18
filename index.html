@@ -2017,6 +2017,181 @@
         .filter(value => Number.isSafeInteger(value) && value >= 0);
     }
 
+    function parseStableSimulationClickSequence(text) {
+      if (typeof text !== 'string' || text.trim() === '') return { values: [], errors: [] };
+      const values = [];
+      const errors = [];
+      text.split(',').map(item => item.trim()).filter(Boolean).forEach(item => {
+        const id = parsePositiveInteger(item);
+        if (id === null) {
+          errors.push(`点击车辆 id「${item}」不是正整数`);
+          return;
+        }
+        values.push(id);
+      });
+      return { values, errors };
+    }
+
+    function parseStableSimulationInput(state, input) {
+      const conveyorCapacity = parsePositiveInteger(input && input.conveyorCapacity);
+      const passengerQueue = parseScriptQueueText(input && input.passengerQueueText);
+      const vehicleText = input && typeof input.vehicleTableText === 'string' ? input.vehicleTableText : '';
+      const parsedVehicles = parseScriptVehicleTable(vehicleText);
+      const vehicles = parsedVehicles.vehicles.filter(vehicle => isScriptColorValue(state, vehicle.colorValue));
+      const clickSequence = parseStableSimulationClickSequence(input && input.clickSequenceText);
+      const errors = [...parsedVehicles.errors, ...clickSequence.errors];
+
+      if (conveyorCapacity === null) errors.push('传送带容量必须是正整数');
+      if (conveyorCapacity !== null && passengerQueue.length < conveyorCapacity) errors.push('乘客队列数量不能少于传送带容量');
+      parsedVehicles.vehicles
+        .filter(vehicle => !isScriptColorValue(state, vehicle.colorValue))
+        .forEach(vehicle => errors.push(`车辆 ${vehicle.id} 的颜色映射 ${vehicle.colorValue} 不存在`));
+      const vehicleIds = new Set(vehicles.map(vehicle => vehicle.id));
+      clickSequence.values.forEach(id => {
+        if (!vehicleIds.has(id)) errors.push(`点击车辆 ${id} 不存在于车辆表`);
+      });
+
+      return {
+        conveyorCapacity,
+        passengerQueue,
+        belt: conveyorCapacity === null ? [] : passengerQueue.slice(0, conveyorCapacity),
+        reserveQueue: conveyorCapacity === null ? [] : passengerQueue.slice(conveyorCapacity),
+        vehicles,
+        clickSequence: clickSequence.values,
+        errors
+      };
+    }
+
+    function cloneSimulationSlot(slot) {
+      return slot ? { ...slot } : null;
+    }
+
+    function formatStableSimulationVehicle(state, vehiclesById, vehicleId) {
+      const vehicle = vehiclesById.get(vehicleId);
+      if (!vehicle) return `#${vehicleId}`;
+      return `#${vehicle.id}${getScriptColorName(state, vehicle.colorValue)}${vehicle.capacity}`;
+    }
+
+    function findStableSimulationTargetSlot(slots, colorValue) {
+      return slots.findIndex(slot => slot && slot.colorValue === colorValue && slot.remaining > 0);
+    }
+
+    function settleStableSimulationStep(state, working, vehiclesById) {
+      const consumption = new Map();
+      const departedVehicleIds = [];
+      const warnings = [];
+      let guard = 0;
+      let moved = true;
+
+      while (moved && guard < 10000) {
+        guard += 1;
+        moved = false;
+        for (let index = 0; index < working.belt.length; index += 1) {
+          const colorValue = working.belt[index];
+          const slotIndex = findStableSimulationTargetSlot(working.slots, colorValue);
+          if (slotIndex === -1) continue;
+
+          const slot = working.slots[slotIndex];
+          slot.remaining -= 1;
+          consumption.set(slot.vehicleId, (consumption.get(slot.vehicleId) || 0) + 1);
+          working.belt.splice(index, 1);
+          if (working.reserveQueue.length > 0) working.belt.push(working.reserveQueue.shift());
+          if (slot.remaining === 0) {
+            departedVehicleIds.push(slot.vehicleId);
+            working.slots[slotIndex] = null;
+          }
+          moved = true;
+          break;
+        }
+      }
+
+      if (guard >= 10000) warnings.push('结算超过安全上限，已停止本步模拟');
+      return {
+        consumption: [...consumption.entries()].map(([vehicleId, count]) => ({ vehicleId, count })),
+        departedVehicleIds,
+        warnings
+      };
+    }
+
+    function runStableSimulation(state, input) {
+      const parsed = parseStableSimulationInput(state, input);
+      if (parsed.errors.length > 0) {
+        return {
+          steps: [],
+          summary: [],
+          finalBelt: parsed.belt,
+          finalReserveQueue: parsed.reserveQueue,
+          finalSlots: [null, null, null, null],
+          errors: parsed.errors
+        };
+      }
+
+      const vehiclesById = new Map(parsed.vehicles.map(vehicle => [vehicle.id, vehicle]));
+      const working = {
+        belt: [...parsed.belt],
+        reserveQueue: [...parsed.reserveQueue],
+        slots: [null, null, null, null]
+      };
+      const steps = [];
+      const allDepartedIds = [];
+
+      parsed.clickSequence.forEach((vehicleId, index) => {
+        const vehicle = vehiclesById.get(vehicleId);
+        const warnings = [];
+        let enteredSlot = null;
+        const emptySlotIndex = working.slots.findIndex(slot => slot === null);
+        if (emptySlotIndex === -1) {
+          warnings.push(`车辆 ${vehicleId} 点击失败：没有空车位`);
+        } else {
+          enteredSlot = emptySlotIndex + 1;
+          working.slots[emptySlotIndex] = {
+            vehicleId: vehicle.id,
+            colorValue: vehicle.colorValue,
+            capacity: vehicle.capacity,
+            remaining: vehicle.capacity
+          };
+        }
+
+        const settled = settleStableSimulationStep(state, working, vehiclesById);
+        warnings.push(...settled.warnings);
+        allDepartedIds.push(...settled.departedVehicleIds);
+        steps.push({
+          step: index + 1,
+          clickedVehicleId: vehicleId,
+          enteredSlot,
+          consumption: settled.consumption,
+          departedVehicleIds: settled.departedVehicleIds,
+          slots: working.slots.map(cloneSimulationSlot),
+          belt: [...working.belt],
+          reserveQueueRemaining: working.reserveQueue.length,
+          warnings
+        });
+      });
+
+      const occupied = working.slots.filter(Boolean);
+      const remainingPassengerCounts = new Map();
+      [...working.belt, ...working.reserveQueue].forEach(value => {
+        remainingPassengerCounts.set(value, (remainingPassengerCounts.get(value) || 0) + 1);
+      });
+      const summary = [
+        `总点击数：${parsed.clickSequence.length}`,
+        `成功进车数：${steps.filter(step => step.enteredSlot !== null).length}`,
+        `开走车辆数：${allDepartedIds.length}`,
+        `未开走占位车辆：${occupied.map(slot => formatStableSimulationVehicle(state, vehiclesById, slot.vehicleId)).join('、') || '无'}`,
+        `剩余乘客：${formatConsumption(state, remainingPassengerCounts)}`,
+        `警告步骤：${steps.filter(step => step.warnings.length > 0).map(step => step.step).join(',') || '无'}`
+      ];
+
+      return {
+        steps,
+        summary,
+        finalBelt: [...working.belt],
+        finalReserveQueue: [...working.reserveQueue],
+        finalSlots: working.slots.map(cloneSimulationSlot),
+        errors: []
+      };
+    }
+
     function setScriptQueuesText(state, queuesText) {
       if (!isValidState(state) || !queuesText || typeof queuesText !== 'object') return state;
       return {
@@ -3056,6 +3231,8 @@
       deleteParkingGame,
       getSavedParkingGameText,
       parseScriptVehicleTable,
+      parseStableSimulationInput,
+      runStableSimulation,
       importScriptVehicleTable,
       setScriptQueuesText,
       syncScriptQueuesFromCurrent,
