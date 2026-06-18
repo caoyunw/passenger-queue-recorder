@@ -647,6 +647,26 @@
           assert(parsed.errors.some(error => error.includes('99')), '未知乘客颜色未报告');
         });
 
+        test('立即结算模拟器支持保存输入、运行、清空和复制报告文本', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            levelName: '第2关',
+            conveyorCapacity: '4',
+            passengerQueueText: '0,0,0,0,2,2',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0',
+            clickSequenceText: '1'
+          });
+          equal(state.simulation.levelName, '第2关', '关卡 id 未保存');
+          state = core.runStableSimulationState(state);
+          assert(state.simulation.result.steps.length === 1, '运行后应保存模拟结果');
+          const report = core.getStableSimulationReportText(state);
+          assert(report.includes('# 第2关 立即结算模拟'), '报告标题错误');
+          assert(report.includes('步骤\t点击车辆\t进入车位\t上客统计'), '报告表头缺失');
+          assert(report.includes('#1红色4'), '报告未包含车辆名称');
+          state = core.clearStableSimulation(state);
+          equal(state.simulation, core.createInitialState().simulation, '清空模拟器状态失败');
+        });
+
         test('立即结算模拟器点击可满员车辆后上客并开走', () => {
           const state = core.createInitialState();
           const result = core.runStableSimulation(state, {

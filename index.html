@@ -2224,6 +2224,93 @@
       };
     }
 
+    function setStableSimulationInput(state, input) {
+      if (!isValidState(state) || !input || typeof input !== 'object') return state;
+      return {
+        ...state,
+        simulation: {
+          ...state.simulation,
+          levelName: typeof input.levelName === 'string' ? input.levelName.trim() : state.simulation.levelName,
+          conveyorCapacity: typeof input.conveyorCapacity === 'string' ? input.conveyorCapacity.trim() : state.simulation.conveyorCapacity,
+          passengerQueueText: typeof input.passengerQueueText === 'string' ? input.passengerQueueText.trim() : state.simulation.passengerQueueText,
+          vehicleTableText: typeof input.vehicleTableText === 'string' ? input.vehicleTableText.trim() : state.simulation.vehicleTableText,
+          clickSequenceText: typeof input.clickSequenceText === 'string' ? input.clickSequenceText.trim() : state.simulation.clickSequenceText
+        }
+      };
+    }
+
+    function runStableSimulationState(state) {
+      if (!isValidState(state)) return state;
+      const result = runStableSimulation(state, state.simulation);
+      return {
+        ...state,
+        simulation: {
+          ...state.simulation,
+          result: result.errors.length > 0 ? null : result,
+          errors: result.errors
+        }
+      };
+    }
+
+    function clearStableSimulation(state) {
+      if (!isValidState(state)) return state;
+      return { ...state, simulation: createEmptySimulation() };
+    }
+
+    function formatStableSimulationSlot(state, vehiclesById, slot, index) {
+      if (!slot) return `${index + 1}:空`;
+      return `${index + 1}:${formatStableSimulationVehicle(state, vehiclesById, slot.vehicleId)} 剩${slot.remaining}`;
+    }
+
+    function formatStableSimulationConsumption(state, vehiclesById, consumption) {
+      return consumption.length
+        ? consumption.map(item => `${formatStableSimulationVehicle(state, vehiclesById, item.vehicleId)}:${item.count}`).join('、')
+        : '无';
+    }
+
+    function getStableSimulationReportText(state) {
+      if (!isValidState(state)) return '# 立即结算模拟\n\n状态无效';
+      const title = state.simulation.levelName.trim() || '未命名关卡';
+      const result = state.simulation.result;
+      const parsedVehicles = parseScriptVehicleTable(state.simulation.vehicleTableText).vehicles;
+      const vehiclesById = new Map(parsedVehicles.map(vehicle => [vehicle.id, vehicle]));
+      const lines = [
+        `# ${title} 立即结算模拟`,
+        '',
+        '## 输入',
+        `传送带容量：${state.simulation.conveyorCapacity || '未填写'}`,
+        `点击顺序：${state.simulation.clickSequenceText || '未填写'}`,
+        '',
+        '## 步骤日志',
+        '步骤\t点击车辆\t进入车位\t上客统计\t开走车辆\t车位状态\t传送带\t补充队列剩余\t警告'
+      ];
+
+      if (state.simulation.errors.length > 0) {
+        lines.push(`错误\t${state.simulation.errors.join('；')}`);
+      } else if (result && result.steps.length > 0) {
+        result.steps.forEach(step => {
+          lines.push([
+            step.step,
+            formatStableSimulationVehicle(state, vehiclesById, step.clickedVehicleId),
+            step.enteredSlot === null ? '失败' : step.enteredSlot,
+            formatStableSimulationConsumption(state, vehiclesById, step.consumption),
+            step.departedVehicleIds.map(id => formatStableSimulationVehicle(state, vehiclesById, id)).join('、') || '无',
+            step.slots.map((slot, index) => formatStableSimulationSlot(state, vehiclesById, slot, index)).join(' | '),
+            step.belt.join(',') || '空',
+            step.reserveQueueRemaining,
+            step.warnings.join('；') || '无'
+          ].join('\t'));
+        });
+      } else {
+        lines.push('无\t尚未运行模拟');
+      }
+
+      lines.push('', '## 总览');
+      if (result) lines.push(...result.summary);
+      if (!result && state.simulation.errors.length === 0) lines.push('尚未运行模拟');
+      return lines.join('\n');
+    }
+
     function setScriptQueuesText(state, queuesText) {
       if (!isValidState(state) || !queuesText || typeof queuesText !== 'object') return state;
       return {
@@ -3265,6 +3352,10 @@
       parseScriptVehicleTable,
       parseStableSimulationInput,
       runStableSimulation,
+      setStableSimulationInput,
+      runStableSimulationState,
+      clearStableSimulation,
+      getStableSimulationReportText,
       importScriptVehicleTable,
       setScriptQueuesText,
       syncScriptQueuesFromCurrent,
