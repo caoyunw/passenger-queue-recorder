@@ -1862,6 +1862,19 @@
       return Number.isSafeInteger(number) && number >= 0 ? number : null;
     }
 
+    function isScriptColorValue(state, value) {
+      return Boolean(state
+        && Array.isArray(state.colors)
+        && Number.isSafeInteger(value)
+        && value >= 0
+        && value < state.colors.length);
+    }
+
+    function getScriptColorName(state, value) {
+      if (isScriptColorValue(state, value)) return state.colors[value].name;
+      return `颜色${value}`;
+    }
+
     function parseScriptIdList(value) {
       if (typeof value !== 'string' || value.trim() === '') return { values: [], errors: [] };
       const values = [];
@@ -1932,7 +1945,7 @@
         if (cells.length < 4) rowErrors.push('字段不足，至少需要车辆id、车颜色、车座位、深度');
 
         const id = parsePositiveInteger(cells[0]);
-        const colorValue = parsePositiveInteger(cells[1]);
+        const colorValue = parseNonNegativeInteger(cells[1]);
         const capacity = parsePositiveInteger(cells[2]);
         const depth = parseNonNegativeInteger(cells[3]);
         const front = parseScriptIdList(cells[4] || '');
@@ -1940,7 +1953,7 @@
 
         if (id === null) rowErrors.push('车辆id必须是正整数');
         if (id !== null && seenIds.has(id)) rowErrors.push(`车辆id ${id} 重复`);
-        if (colorValue === null) rowErrors.push('车颜色必须是正整数映射值');
+        if (colorValue === null) rowErrors.push('车颜色必须是非负整数映射值');
         if (!VEHICLE_CAPACITIES.includes(capacity)) rowErrors.push('车座位必须是 4、6 或 10');
         if (depth === null) rowErrors.push('深度必须是非负整数');
         rowErrors.push(...front.errors, ...back.errors);
@@ -1967,9 +1980,9 @@
     function importScriptVehicleTable(state, text) {
       if (!isValidState(state) || typeof text !== 'string') return state;
       const parsed = parseScriptVehicleTable(text);
-      const vehicles = parsed.vehicles.filter(vehicle => isMappedValue(state, vehicle.colorValue));
+      const vehicles = parsed.vehicles.filter(vehicle => isScriptColorValue(state, vehicle.colorValue));
       const colorErrors = parsed.vehicles
-        .filter(vehicle => !isMappedValue(state, vehicle.colorValue))
+        .filter(vehicle => !isScriptColorValue(state, vehicle.colorValue))
         .map(vehicle => `车辆 ${vehicle.id} 的颜色映射 ${vehicle.colorValue} 不存在`);
       return {
         ...state,
@@ -1986,7 +1999,7 @@
       if (typeof text !== 'string' || text.trim() === '') return [];
       return text.split(',')
         .map(item => Number(item.trim()))
-        .filter(value => Number.isSafeInteger(value) && value > 0);
+        .filter(value => Number.isSafeInteger(value) && value >= 0);
     }
 
     function setScriptQueuesText(state, queuesText) {
@@ -2253,7 +2266,7 @@
     function formatScriptVehicle(state, vehicleOrId) {
       const vehicle = typeof vehicleOrId === 'number' ? getScriptVehicle(state, vehicleOrId) : vehicleOrId;
       if (!vehicle) return `#${vehicleOrId}`;
-      return `#${vehicle.id}${getColorName(state, vehicle.colorValue)}${vehicle.capacity}`;
+      return `#${vehicle.id}${getScriptColorName(state, vehicle.colorValue)}${vehicle.capacity}`;
     }
 
     function formatScriptSlot(state, slot) {
@@ -2278,7 +2291,7 @@
     function formatConsumption(state, consumption) {
       const parts = [...consumption.entries()]
         .filter(([, count]) => count > 0)
-        .map(([colorValue, count]) => `${getColorName(state, colorValue)}x${count}`);
+        .map(([colorValue, count]) => `${getScriptColorName(state, colorValue)}x${count}`);
       return parts.length ? parts.join('、') : '无';
     }
 
@@ -2314,7 +2327,7 @@
             consumedByVehicle.set(vehicle.id, (consumedByVehicle.get(vehicle.id) || 0) + delta);
             const available = queueCounts.get(vehicle.colorValue) || 0;
             if (available < delta) {
-              rowIssues.push(`${getColorName(state, vehicle.colorValue)}乘客不足：需要 ${delta}，剩余 ${available}`);
+              rowIssues.push(`${getScriptColorName(state, vehicle.colorValue)}乘客不足：需要 ${delta}，剩余 ${available}`);
               queueCounts.set(vehicle.colorValue, 0);
             } else {
               queueCounts.set(vehicle.colorValue, available - delta);
@@ -2418,7 +2431,7 @@
       const vehicleRows = state.script.vehicles.length
         ? state.script.vehicles.map(vehicle => [
           vehicle.id,
-          getColorName(state, vehicle.colorValue),
+          getScriptColorName(state, vehicle.colorValue),
           vehicle.capacity,
           vehicle.depth,
           vehicle.frontVehicleIds.join(','),
@@ -2718,7 +2731,8 @@
         && Number.isSafeInteger(vehicle.id)
         && vehicle.id > 0
         && Number.isSafeInteger(vehicle.colorValue)
-        && mappedValues.has(vehicle.colorValue)
+        && vehicle.colorValue >= 0
+        && vehicle.colorValue < mappedValues.size
         && VEHICLE_CAPACITIES.includes(vehicle.capacity)
         && Number.isSafeInteger(vehicle.depth)
         && vehicle.depth >= 0
@@ -2756,7 +2770,8 @@
         && Number.isSafeInteger(slot.vehicleId)
         && slot.vehicleId > 0
         && Number.isSafeInteger(slot.colorValue)
-        && mappedValues.has(slot.colorValue)
+        && slot.colorValue >= 0
+        && slot.colorValue < mappedValues.size
         && VEHICLE_CAPACITIES.includes(slot.capacity)
         && Number.isInteger(slot.remaining)
         && slot.remaining >= 0
@@ -3004,6 +3019,7 @@
       setScriptActiveHotspot,
       findScriptHotspotAt,
       applyScriptOcrDetections,
+      mergeOcrDetectionsWithRegions,
       selectScriptVehicle,
       selectScriptVehicleAt,
       updateScriptSlotRemaining,
@@ -4112,8 +4128,8 @@
           vehicleId: 0,
           xPercent: ((minX + maxX) / 2 / width) * 100,
           yPercent: ((minY + maxY) / 2 / height) * 100,
-          widthPercent: Math.max(4, (boxWidth / width) * 120),
-          heightPercent: Math.max(4, (boxHeight / height) * 120),
+          widthPercent: Math.max(4, (boxWidth / width) * 100),
+          heightPercent: Math.max(4, (boxHeight / height) * 100),
           confidence: null,
           pixelCount: count
         });
@@ -4161,8 +4177,6 @@
         if (match) {
           match.vehicleId = detection.vehicleId;
           match.confidence = detection.confidence;
-        } else {
-          merged.push(detection);
         }
       });
       return merged;
