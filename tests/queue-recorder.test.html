@@ -667,6 +667,38 @@
           equal(state.simulation, core.createInitialState().simulation, '清空模拟器状态失败');
         });
 
+        test('立即结算模拟器输入变化后清空旧结果和旧错误', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            conveyorCapacity: '4',
+            passengerQueueText: '99,99,99,99',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0',
+            clickSequenceText: '1'
+          });
+          state = core.runStableSimulationState(state);
+          assert(state.simulation.errors.length > 0, '非法输入应保存错误');
+          state = core.setStableSimulationInput(state, {
+            passengerQueueText: '0,0,0,0'
+          });
+          equal(state.simulation.result, null, '输入变化后应清空旧结果');
+          equal(state.simulation.errors, [], '输入变化后应清空旧错误');
+        });
+
+        test('立即结算模拟器空点击序列运行后报告 0 步而不是尚未运行', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            levelName: '空点击测试',
+            conveyorCapacity: '4',
+            passengerQueueText: '0,0,0,0',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0',
+            clickSequenceText: ''
+          });
+          state = core.runStableSimulationState(state);
+          const report = core.getStableSimulationReportText(state);
+          assert(report.includes('总点击数：0'), '空点击运行后应保留总览');
+          assert(!report.includes('尚未运行模拟'), '已运行的空点击序列不应显示尚未运行');
+        });
+
         test('立即结算模拟器点击可满员车辆后上客并开走', () => {
           const state = core.createInitialState();
           const result = core.runStableSimulation(state, {

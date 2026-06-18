@@ -2226,15 +2226,25 @@
 
     function setStableSimulationInput(state, input) {
       if (!isValidState(state) || !input || typeof input !== 'object') return state;
+      const nextFields = {
+        levelName: typeof input.levelName === 'string' ? input.levelName.trim() : state.simulation.levelName,
+        conveyorCapacity: typeof input.conveyorCapacity === 'string' ? input.conveyorCapacity.trim() : state.simulation.conveyorCapacity,
+        passengerQueueText: typeof input.passengerQueueText === 'string' ? input.passengerQueueText.trim() : state.simulation.passengerQueueText,
+        vehicleTableText: typeof input.vehicleTableText === 'string' ? input.vehicleTableText.trim() : state.simulation.vehicleTableText,
+        clickSequenceText: typeof input.clickSequenceText === 'string' ? input.clickSequenceText.trim() : state.simulation.clickSequenceText
+      };
+      const inputChanged = nextFields.levelName !== state.simulation.levelName
+        || nextFields.conveyorCapacity !== state.simulation.conveyorCapacity
+        || nextFields.passengerQueueText !== state.simulation.passengerQueueText
+        || nextFields.vehicleTableText !== state.simulation.vehicleTableText
+        || nextFields.clickSequenceText !== state.simulation.clickSequenceText;
       return {
         ...state,
         simulation: {
           ...state.simulation,
-          levelName: typeof input.levelName === 'string' ? input.levelName.trim() : state.simulation.levelName,
-          conveyorCapacity: typeof input.conveyorCapacity === 'string' ? input.conveyorCapacity.trim() : state.simulation.conveyorCapacity,
-          passengerQueueText: typeof input.passengerQueueText === 'string' ? input.passengerQueueText.trim() : state.simulation.passengerQueueText,
-          vehicleTableText: typeof input.vehicleTableText === 'string' ? input.vehicleTableText.trim() : state.simulation.vehicleTableText,
-          clickSequenceText: typeof input.clickSequenceText === 'string' ? input.clickSequenceText.trim() : state.simulation.clickSequenceText
+          ...nextFields,
+          result: inputChanged ? null : state.simulation.result,
+          errors: inputChanged ? [] : state.simulation.errors
         }
       };
     }
@@ -2301,6 +2311,8 @@
             step.warnings.join('；') || '无'
           ].join('\t'));
         });
+      } else if (result) {
+        lines.push('无\t已运行，0 步');
       } else {
         lines.push('无\t尚未运行模拟');
       }
