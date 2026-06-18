@@ -2382,6 +2382,91 @@
       return lines.join('\n');
     }
 
+    function formatScriptLevelName(value, fallbackId = 1) {
+      const text = typeof value === 'string' ? value.trim() : '';
+      if (text === '') return `第${fallbackId}关`;
+      return /^\d+$/.test(text) ? `第${text}关` : text;
+    }
+
+    function getScriptLevelName(state) {
+      return formatScriptLevelName(state.script.levelName, state.script.nextLevelId);
+    }
+
+    function escapeMarkdownTableCell(value) {
+      return String(value)
+        .replace(/\|/g, '\\|')
+        .replace(/\r?\n/g, '<br>');
+    }
+
+    function getScriptQueueTextForMarkdown(state, key) {
+      const pasted = state.script.queuesText[key].trim();
+      if (pasted !== '') return pasted;
+      return state.queues[key].join(',');
+    }
+
+    function getScriptMarkdownText(state) {
+      if (!isValidState(state)) return '# 剧本还原\n\n状态无效';
+      const analysis = getScriptAnalysis(state);
+      const vehicleRows = state.script.vehicles.length
+        ? state.script.vehicles.map(vehicle => [
+          vehicle.id,
+          getColorName(state, vehicle.colorValue),
+          vehicle.capacity,
+          vehicle.depth,
+          vehicle.frontVehicleIds.join(','),
+          vehicle.backVehicleIds.join(',')
+        ])
+        : [['无', '无', '无', '无', '无', '无']];
+      const batchRows = analysis.timelineRows.length
+        ? analysis.timelineRows.map(row => [
+          row.batch,
+          row.selected,
+          row.entered,
+          row.consumption,
+          row.slots,
+          row.departed,
+          row.issues || '无',
+          row.note || ''
+        ])
+        : [['无', '无', '无', '无', '无', '无', '无', '']];
+      const lines = [
+        `# ${getScriptLevelName(state)} 剧本还原`,
+        '',
+        '## 乘客队列配置',
+        `- 传送带：${getScriptQueueTextForMarkdown(state, 'conveyor') || '无'}`,
+        `- 左侧队列：${getScriptQueueTextForMarkdown(state, 'left') || '无'}`,
+        `- 右侧队列：${getScriptQueueTextForMarkdown(state, 'right') || '无'}`,
+        '',
+        '## 车辆数据表',
+        '| 车辆id | 颜色 | 座位 | 深度 | 前方车辆id | 后方车辆id |',
+        '| --- | --- | --- | --- | --- | --- |',
+        ...vehicleRows.map(row => `| ${row.map(escapeMarkdownTableCell).join(' | ')} |`),
+        '',
+        '## 操作日志',
+        '| 批次 | 本批选择车辆 | 进入车位 | 上客反推 | 车位状态 | 开走车辆 | 警告 | 备注 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- |',
+        ...batchRows.map(row => `| ${row.map(escapeMarkdownTableCell).join(' | ')} |`),
+        '',
+        '## 设计摘要',
+        ...analysis.summary.map(item => `- ${item}`),
+        '',
+        '## 校验提示',
+        ...(analysis.issues.length ? analysis.issues : ['未发现明显不一致']).map(item => `- ${item}`)
+      ];
+      return lines.join('\n');
+    }
+
+    function getSafeScriptFilenamePart(value) {
+      const name = String(value || '').trim()
+        .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+        .replace(/\s+/g, '');
+      return name || '关卡剧本';
+    }
+
+    function getScriptMarkdownFilename(state) {
+      return `${getSafeScriptFilenamePart(getScriptLevelName(state))}-剧本还原.md`;
+    }
+
     function cloneScriptWorkspace(script) {
       return {
         levelName: script.levelName,
@@ -2429,9 +2514,10 @@
 
     function saveScriptLevel(state, name) {
       if (!isValidState(state)) return state;
-      const levelName = typeof name === 'string' && name.trim() !== ''
-        ? name.trim()
-        : state.script.levelName.trim() || `第 ${state.script.nextLevelId} 关`;
+      const levelName = formatScriptLevelName(
+        typeof name === 'string' && name.trim() !== '' ? name : state.script.levelName,
+        state.script.nextLevelId
+      );
       const savedLevel = {
         id: state.script.nextLevelId,
         name: levelName,
@@ -2917,6 +3003,8 @@
       recordScriptBatch,
       getScriptAnalysis,
       getScriptReportText,
+      getScriptMarkdownText,
+      getScriptMarkdownFilename,
       clearScriptWorkspace,
       saveScriptLevel,
       loadScriptLevel,
@@ -3629,6 +3717,7 @@
         const actions = document.createElement('div');
         actions.className = 'slot-actions';
         [
+          ['download-script-level-md', '下载 MD', 'secondary'],
           ['load-script-level', '载入', 'secondary'],
           ['copy-script-report', '复制当前报告', 'secondary'],
           ['delete-script-level', '删除', 'danger']
@@ -3666,8 +3755,8 @@
           <section class="panel" aria-labelledby="scriptLevelTitle">
             <p class="panel-label">00 / LEVEL DATA</p>
             <h2 id="scriptLevelTitle">关卡基础数据</h2>
-            <label class="script-field">记录名称
-              <input id="scriptLevelName" class="script-input" type="text" autocomplete="off" placeholder="例如：第12关" value="">
+            <label class="script-field">关卡 id
+              <input id="scriptLevelName" class="script-input" type="text" autocomplete="off" placeholder="例如：12" value="">
             </label>
             <div class="script-field-grid">
               <label class="script-field">传送带配置<textarea class="script-textarea script-queue-input" data-queue-key="conveyor"></textarea></label>
@@ -3736,7 +3825,7 @@
                 <h2 id="scriptReportTitle">还原报告</h2>
                 <div class="action-row">
                   <button class="action-button secondary" type="button" data-action="copy-script-report">复制报告</button>
-                  <button class="action-button primary" type="button" data-action="save-script-level">保存关卡剧本</button>
+                  <button class="action-button primary" type="button" data-action="save-script-level">保存剧本并生成 MD</button>
                 </div>
                 <pre class="script-report"></pre>
               </section>
@@ -3866,6 +3955,19 @@
         button.textContent = '复制失败';
         return false;
       }
+    }
+
+    function downloadTextFile(filename, text, mimeType = 'text/plain;charset=utf-8') {
+      const blob = new Blob([text], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 
     function readFileAsDataUrl(file) {
@@ -4285,9 +4387,32 @@
       } else if (target.matches('[data-action="copy-script-report"]')) {
         void copyText(getScriptReportText(state), target);
       } else if (target.matches('[data-action="save-script-level"]')) {
-        updateState(saveScriptLevel(state, workspace.querySelector('#scriptLevelName').value));
+        const nextState = saveScriptLevel(state, workspace.querySelector('#scriptLevelName').value);
+        updateState(nextState);
+        downloadTextFile(
+          getScriptMarkdownFilename(nextState),
+          getScriptMarkdownText(nextState),
+          'text/markdown;charset=utf-8'
+        );
       } else if (target.matches('[data-action="load-script-level"][data-level-id]')) {
         updateState(loadScriptLevel(state, Number(target.dataset.levelId)));
+      } else if (target.matches('[data-action="download-script-level-md"][data-level-id]')) {
+        const levelId = Number(target.dataset.levelId);
+        const level = state.script.savedLevels.find(item => item.id === levelId);
+        if (level) {
+          const levelState = {
+            ...state,
+            script: {
+              ...state.script,
+              ...level.data
+            }
+          };
+          downloadTextFile(
+            getScriptMarkdownFilename(levelState),
+            getScriptMarkdownText(levelState),
+            'text/markdown;charset=utf-8'
+          );
+        }
       } else if (target.matches('[data-action="delete-script-level"][data-level-id]')) {
         updateState(deleteScriptLevel(state, Number(target.dataset.levelId)));
       } else if (target.matches('[data-action="clear-script-workspace"]')

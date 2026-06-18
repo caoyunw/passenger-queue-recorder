@@ -672,6 +672,16 @@
           assert(report.includes('红色x3'), '报告未反推红色乘客消耗');
           assert(report.includes('#2蓝色6'), '报告未标出蓝车');
           assert(report.includes('障碍车'), '报告未标出未吃客占位车辆');
+          state = core.setScriptLevelName(state, '第12关');
+          const markdown = core.getScriptMarkdownText(state);
+          assert(markdown.startsWith('# 第12关 剧本还原'), 'Markdown 标题未包含关卡 id');
+          assert(markdown.includes('## 乘客队列配置'), 'Markdown 未包含乘客队列配置');
+          assert(markdown.includes('传送带：1,1,1,1,3,3'), 'Markdown 未包含传送带配置');
+          assert(markdown.includes('## 车辆数据表'), 'Markdown 未包含车辆数据表');
+          assert(markdown.includes('| 1 | 红色 | 4 | 1 |  | 2 |'), 'Markdown 未包含车辆数据行');
+          assert(markdown.includes('## 操作日志'), 'Markdown 未包含操作日志');
+          assert(markdown.includes('红色x3'), 'Markdown 未包含上客反推');
+          assert(markdown.includes('## 设计摘要'), 'Markdown 未包含设计摘要');
         });
 
         test('剧本还原支持保存和载入关卡数据', () => {
@@ -1000,9 +1010,13 @@
         test('剧本还原页面支持导入车辆表和生成报告', () => {
           appDocument.querySelector('.stage-button[data-stage="script"]').click();
           equal(app.getState().activeStage, 'script', '未进入剧本还原页面');
+          const levelInput = appDocument.querySelector('#scriptLevelName');
+          assert(levelInput && levelInput.closest('label').textContent.includes('关卡 id'), '关卡输入应明确标为关卡 id');
+          assert(levelInput.placeholder.includes('12'), '关卡 id 输入框缺少示例占位');
           const leftStackTitles = [...appDocument.querySelectorAll('.script-left-stack h2')].map(title => title.textContent);
           equal(leftStackTitles.slice(0, 2), ['当前车位状态', '停车场截图与热区'], '剧本还原左侧布局应先车位后截图');
           assert(appDocument.querySelector('.script-right-stack #scriptBatchTitle'), '操作批次记录应在右侧栏');
+          assert(appDocument.querySelector('[data-action="save-script-level"]').textContent.includes('MD'), '保存剧本按钮应说明会生成 MD');
           const tableInput = appDocument.querySelector('#scriptVehicleTable');
           assert(tableInput, '车辆表输入框缺失');
           const csvFileInput = appDocument.querySelector('#scriptVehicleCsvFile');
@@ -1051,6 +1065,8 @@
           equal(app.getState().script.activeHotspotId, 2, '点击已填 id 热区未定位到对应列表');
           equal(app.getState().script.pending.selectedVehicleIds, [1], '点击已填 id 热区未记录车辆');
           assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]').textContent.includes('✓'), '保存状态热区记录选车后未打勾');
+          app.updateState(core.saveScriptLevel(app.getState(), '第12关'));
+          assert(appDocument.querySelector('[data-action="download-script-level-md"][data-level-id]'), '已保存剧本缺少 MD 下载按钮');
         });
 
         test('热区手动改 id 后可保存，并通过列表或截图选车', () => {
