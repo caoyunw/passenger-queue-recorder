@@ -307,6 +307,20 @@
           equal(state.activeStage, 'conveyor', '初始阶段错误');
         });
 
+        test('立即结算模拟器初始状态包含文本输入和空结果', () => {
+          const state = core.createInitialState();
+          equal(state.simulation, {
+            levelName: '',
+            conveyorCapacity: '',
+            passengerQueueText: '',
+            vehicleTableText: '',
+            clickSequenceText: '',
+            result: null,
+            errors: []
+          }, '模拟器初始状态错误');
+          assert(core.saveState(state), '包含模拟器状态时应允许保存');
+        });
+
         test('追加、删除和撤销只影响当前区域', () => {
           let state = core.createInitialState();
           state = core.appendValue(state, 'left', 3);

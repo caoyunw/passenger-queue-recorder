@@ -1324,8 +1324,8 @@
   <script>
     const STORAGE_KEY = 'passenger-queue-recorder-state-v5';
     const SECTIONS = ['conveyor', 'left', 'right'];
-    const STAGES = [...SECTIONS, 'configs', 'parking', 'script'];
-    const STATE_KEYS = ['colors', 'queues', 'histories', 'parking', 'script', 'activeStage'];
+    const STAGES = [...SECTIONS, 'configs', 'parking', 'script', 'simulation'];
+    const STATE_KEYS = ['colors', 'queues', 'histories', 'parking', 'script', 'simulation', 'activeStage'];
     const COLOR_KEYS = ['name', 'value', 'hex'];
     const PARKING_KEYS = ['slots', 'logs', 'nextVehicleId', 'savedGames', 'nextGameId', 'pending'];
     const VEHICLE_KEYS = ['id', 'colorValue', 'capacity', 'remaining', 'enteredStep'];
@@ -1342,6 +1342,7 @@
     const SCRIPT_SLOT_SNAPSHOT_KEYS = ['slot', 'vehicleId', 'remaining', 'capacity'];
     const SCRIPT_PENDING_KEYS = ['selectedVehicleIds', 'enteredSlots', 'departedVehicleIds'];
     const SCRIPT_LEVEL_KEYS = ['id', 'name', 'savedAt', 'data'];
+    const SIMULATION_KEYS = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText', 'result', 'errors'];
     const VEHICLE_CAPACITIES = [4, 6, 10];
     const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/;
     const DEFAULT_COLORS = [
@@ -1403,6 +1404,18 @@
       };
     }
 
+    function createEmptySimulation() {
+      return {
+        levelName: '',
+        conveyorCapacity: '',
+        passengerQueueText: '',
+        vehicleTableText: '',
+        clickSequenceText: '',
+        result: null,
+        errors: []
+      };
+    }
+
     function createInitialState() {
       return {
         colors: DEFAULT_COLORS.map(color => ({ ...color })),
@@ -1410,6 +1423,7 @@
         histories: createEmptySections(),
         parking: createEmptyParking(),
         script: createEmptyScript(),
+        simulation: createEmptySimulation(),
         activeStage: 'conveyor'
       };
     }
@@ -2885,6 +2899,29 @@
         && script.nextLevelId > 0;
     }
 
+    function isValidSimulationResult(result) {
+      return result === null || (result
+        && typeof result === 'object'
+        && Array.isArray(result.steps)
+        && Array.isArray(result.summary)
+        && Array.isArray(result.finalBelt)
+        && Array.isArray(result.finalReserveQueue)
+        && Array.isArray(result.finalSlots)
+        && result.finalSlots.length === 4);
+    }
+
+    function isValidSimulation(simulation) {
+      return hasExactKeys(simulation, SIMULATION_KEYS)
+        && typeof simulation.levelName === 'string'
+        && typeof simulation.conveyorCapacity === 'string'
+        && typeof simulation.passengerQueueText === 'string'
+        && typeof simulation.vehicleTableText === 'string'
+        && typeof simulation.clickSequenceText === 'string'
+        && isValidSimulationResult(simulation.result)
+        && isDenseArray(simulation.errors)
+        && simulation.errors.every(error => typeof error === 'string');
+    }
+
     function isValidState(candidate) {
       if (!hasExactKeys(candidate, STATE_KEYS)
         || !isDenseArray(candidate.colors)
@@ -2912,6 +2949,7 @@
         && isValidSections(candidate.histories, mappedValues, true)
         && isValidParking(candidate.parking, mappedValues)
         && isValidScript(candidate.script, mappedValues)
+        && isValidSimulation(candidate.simulation)
         && STAGES.includes(candidate.activeStage);
     }
 
@@ -2958,13 +2996,20 @@
       };
     }
 
+    function normalizeSimulationForCurrentVersion(simulation) {
+      return simulation && typeof simulation === 'object'
+        ? { ...createEmptySimulation(), ...simulation }
+        : createEmptySimulation();
+    }
+
     function normalizeLoadedState(candidate) {
       if (!candidate || typeof candidate !== 'object') return createInitialState();
-      const candidateWithScript = {
+      const candidateWithCurrentData = {
         ...candidate,
-        script: normalizeScriptForCurrentVersion(candidate.script || createEmptyScript())
+        script: normalizeScriptForCurrentVersion(candidate.script || createEmptyScript()),
+        simulation: normalizeSimulationForCurrentVersion(candidate.simulation)
       };
-      return isValidState(candidateWithScript) ? candidateWithScript : createInitialState();
+      return isValidState(candidateWithCurrentData) ? candidateWithCurrentData : createInitialState();
     }
 
     function loadState() {
