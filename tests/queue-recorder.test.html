@@ -1005,10 +1005,10 @@
           });
         });
 
-        test('工作台包含六阶段导航、viewport 和保存反馈状态区域', () => {
+        test('工作台包含七阶段导航、viewport 和保存反馈状态区域', () => {
           assert(app, 'QueueRecorderApp 不存在');
           const stageButtons = [...appDocument.querySelectorAll('.stage-button[data-stage]')];
-          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'parking', 'script'], '六个导航按钮错误');
+          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'parking', 'script', 'simulation'], '七个导航按钮错误');
           equal(app.getState().activeStage, 'conveyor', '初始活动阶段应为 conveyor');
           assert(appDocument.querySelector('.stage-button[data-stage="conveyor"]').classList.contains('is-active'), 'conveyor 导航未高亮');
           assert(appDocument.querySelector('meta[name="viewport"][content="width=device-width, initial-scale=1"]'), 'viewport meta 缺失');
@@ -1245,6 +1245,37 @@
           assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]').textContent.includes('✓'), '保存状态热区记录选车后未打勾');
           app.updateState(core.saveScriptLevel(app.getState(), '第12关'));
           assert(appDocument.querySelector('[data-action="download-script-level-md"][data-level-id]'), '已保存剧本缺少 MD 下载按钮');
+        });
+
+        test('立即结算模拟页面支持文本输入、运行和清空', () => {
+          appDocument.querySelector('.stage-button[data-stage="simulation"]').click();
+          equal(app.getState().activeStage, 'simulation', '未进入立即结算模拟页面');
+          equal(appDocument.querySelector('.workspace-title').textContent, '立即结算模拟', '页面标题错误');
+          equal(appDocument.querySelector('.count-card strong').textContent, '0', '未运行时步骤数应为 0');
+          const fields = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText'];
+          fields.forEach(field => {
+            assert(appDocument.querySelector(`.simulation-input[data-simulation-field="${field}"]`), `缺少 ${field} 输入控件`);
+          });
+
+          appDocument.querySelector('.simulation-input[data-simulation-field="conveyorCapacity"]').value = '4';
+          appDocument.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]').value = '0,0,0,0,2,2';
+          appDocument.querySelector('.simulation-input[data-simulation-field="vehicleTableText"]').value = '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0';
+          appDocument.querySelector('.simulation-input[data-simulation-field="clickSequenceText"]').value = '1';
+          appDocument.querySelector('[data-action="run-stable-simulation"]').click();
+
+          const reportText = appDocument.querySelector('.script-report').textContent;
+          assert(reportText.includes('#1红色4'), '报告缺少车辆描述');
+          assert(reportText.includes('进车位 1'), '报告缺少进车位 1');
+          assert(reportText.includes('上客 4'), '报告缺少上客 4');
+          assert(reportText.includes('开走'), '报告缺少开走');
+          assert(reportText.includes('最终车位：空'), '报告缺少最终车位为空');
+          equal(appDocument.querySelector('.count-card strong').textContent, '1', '运行后步骤数应为 1');
+
+          const originalConfirm = appWindow.confirm;
+          appWindow.confirm = () => true;
+          appDocument.querySelector('[data-action="clear-stable-simulation"]').click();
+          appWindow.confirm = originalConfirm;
+          equal(app.getState().simulation, core.createInitialState().simulation, '清空模拟状态失败');
         });
 
         test('热区手动改 id 后可保存，并通过列表或截图选车', () => {

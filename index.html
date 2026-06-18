@@ -1286,6 +1286,10 @@
           <span class="stage-index">06</span>
           <span><span class="stage-name">剧本还原</span><small class="stage-code">SCRIPT LAB</small></span>
         </button>
+        <button class="stage-button" type="button" data-stage="simulation">
+          <span class="stage-index">07</span>
+          <span><span class="stage-name">立即结算模拟</span><small class="stage-code">STABLE SIM</small></span>
+        </button>
       </nav>
 
       <div class="save-panel">
@@ -2274,7 +2278,7 @@
 
     function formatStableSimulationConsumption(state, vehiclesById, consumption) {
       return consumption.length
-        ? consumption.map(item => `${formatStableSimulationVehicle(state, vehiclesById, item.vehicleId)}:${item.count}`).join('、')
+        ? consumption.map(item => `上客 ${item.count}（${formatStableSimulationVehicle(state, vehiclesById, item.vehicleId)}）`).join('、')
         : '无';
     }
 
@@ -2302,9 +2306,11 @@
           lines.push([
             step.step,
             formatStableSimulationVehicle(state, vehiclesById, step.clickedVehicleId),
-            step.enteredSlot === null ? '失败' : step.enteredSlot,
+            step.enteredSlot === null ? '进车失败' : `进车位 ${step.enteredSlot}`,
             formatStableSimulationConsumption(state, vehiclesById, step.consumption),
-            step.departedVehicleIds.map(id => formatStableSimulationVehicle(state, vehiclesById, id)).join('、') || '无',
+            step.departedVehicleIds.length > 0
+              ? `开走 ${step.departedVehicleIds.map(id => formatStableSimulationVehicle(state, vehiclesById, id)).join('、')}`
+              : '无',
             step.slots.map((slot, index) => formatStableSimulationSlot(state, vehiclesById, slot, index)).join(' | '),
             step.belt.join(',') || '空',
             step.reserveQueueRemaining,
@@ -2319,6 +2325,11 @@
 
       lines.push('', '## 总览');
       if (result) lines.push(...result.summary);
+      if (result) {
+        lines.push(`最终车位：${result.finalSlots.some(Boolean)
+          ? result.finalSlots.map((slot, index) => formatStableSimulationSlot(state, vehiclesById, slot, index)).join(' | ')
+          : '空'}`);
+      }
       if (!result && state.simulation.errors.length === 0) lines.push('尚未运行模拟');
       return lines.join('\n');
     }
@@ -4236,6 +4247,71 @@
       renderSavedScriptLevels(workspace.querySelector('.saved-script-list'));
     }
 
+    function renderSimulationStage() {
+      const report = getStableSimulationReportText(state);
+      const stepCount = state.simulation.result ? state.simulation.result.steps.length : 0;
+      workspace.innerHTML = `
+        <div class="script-page">
+          <header class="workspace-header">
+            <div>
+              <p class="eyebrow">STABLE SIMULATION</p>
+              <h2 class="workspace-title">立即结算模拟</h2>
+            </div>
+            <div class="count-card">
+              <span>STEPS</span>
+              <strong>${stepCount}</strong>
+            </div>
+          </header>
+
+          <div class="script-reconstruction-grid">
+            <div class="script-left-stack">
+              <section class="panel" aria-labelledby="simulationInputTitle">
+                <p class="panel-label">01 / SIMULATION INPUT</p>
+                <h2 id="simulationInputTitle">文本输入</h2>
+                <div class="script-field-grid">
+                  <label class="script-field">关卡 id
+                    <input class="script-input simulation-input" type="text" autocomplete="off" placeholder="例如：第12关" data-simulation-field="levelName">
+                  </label>
+                  <label class="script-field">传送带容量
+                    <input class="script-input simulation-input" type="number" min="1" step="1" inputmode="numeric" autocomplete="off" placeholder="例如：4" data-simulation-field="conveyorCapacity">
+                  </label>
+                </div>
+                <label class="script-field">完整乘客队列
+                  <textarea class="script-textarea simulation-input" placeholder="例如：0,0,0,0,2,2" data-simulation-field="passengerQueueText"></textarea>
+                </label>
+                <label class="script-field">车辆数据表
+                  <textarea class="script-textarea simulation-input" placeholder="车辆id&#9;车颜色&#9;车座位&#9;深度&#10;1&#9;0&#9;4&#9;0" data-simulation-field="vehicleTableText"></textarea>
+                </label>
+                <label class="script-field">点击车辆顺序
+                  <textarea class="script-textarea simulation-input" placeholder="例如：1,2,3" data-simulation-field="clickSequenceText"></textarea>
+                </label>
+                <div class="action-row">
+                  <button class="action-button primary" type="button" data-action="run-stable-simulation">运行模拟</button>
+                  <button class="action-button secondary" type="button" data-action="copy-stable-simulation-report">复制报告</button>
+                  <button class="action-button danger" type="button" data-action="clear-stable-simulation">清空模拟</button>
+                </div>
+              </section>
+            </div>
+
+            <aside class="script-right-stack">
+              <section class="panel" aria-labelledby="simulationReportTitle">
+                <p class="panel-label">02 / REPORT</p>
+                <h2 id="simulationReportTitle">模拟报告</h2>
+                <pre class="script-report"></pre>
+              </section>
+            </aside>
+          </div>
+        </div>
+      `;
+
+      workspace.querySelector('.simulation-input[data-simulation-field="levelName"]').value = state.simulation.levelName;
+      workspace.querySelector('.simulation-input[data-simulation-field="conveyorCapacity"]').value = state.simulation.conveyorCapacity;
+      workspace.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]').value = state.simulation.passengerQueueText;
+      workspace.querySelector('.simulation-input[data-simulation-field="vehicleTableText"]').value = state.simulation.vehicleTableText;
+      workspace.querySelector('.simulation-input[data-simulation-field="clickSequenceText"]').value = state.simulation.clickSequenceText;
+      workspace.querySelector('.script-report').textContent = report;
+    }
+
     function renderParkingStage() {
       workspace.innerHTML = `
         <div class="parking-page">
@@ -4583,8 +4659,12 @@
         renderConfigsStage();
       } else if (state.activeStage === 'parking') {
         renderParkingStage();
-      } else {
+      } else if (state.activeStage === 'script') {
         renderScriptStage();
+      } else if (state.activeStage === 'simulation') {
+        renderSimulationStage();
+      } else {
+        workspace.innerHTML = '<section class="panel input-panel"><p class="empty-sequence">未知阶段</p></section>';
       }
     }
 
@@ -4634,6 +4714,14 @@
             ? updateScriptHotspot(nextState, hotspotId, { ...updates, status: 'saved' })
             : nextState;
         }, currentState);
+    }
+
+    function getStableSimulationInputFromDom() {
+      const input = {};
+      workspace.querySelectorAll('.simulation-input[data-simulation-field]').forEach(field => {
+        input[field.dataset.simulationField] = field.value;
+      });
+      return input;
     }
 
     stageNav.addEventListener('click', event => {
@@ -4715,6 +4803,13 @@
       } else if (target.matches('[data-action="clear-parking"]')
         && window.confirm('确定要清空全部车位和操作日志吗？')) {
         updateState(clearParking(state));
+      } else if (target.matches('[data-action="run-stable-simulation"]')) {
+        updateState(runStableSimulationState(setStableSimulationInput(state, getStableSimulationInputFromDom())));
+      } else if (target.matches('[data-action="copy-stable-simulation-report"]')) {
+        void copyText(getStableSimulationReportText(setStableSimulationInput(state, getStableSimulationInputFromDom())), target);
+      } else if (target.matches('[data-action="clear-stable-simulation"]')
+        && window.confirm('确定要清空立即结算模拟输入和结果吗？')) {
+        updateState(clearStableSimulation(state));
       } else if (target.matches('[data-action="sync-script-queues"]')) {
         updateState(syncScriptQueuesFromCurrent(state));
       } else if (target.matches('[data-action="save-script-queues"]')) {
@@ -4809,6 +4904,9 @@
         updateState(updateVehicleRemaining(state, Number(target.dataset.slotIndex), Number(target.value)));
       } else if (target instanceof HTMLInputElement && target.matches('.script-remaining-input[data-slot-index]')) {
         updateState(updateScriptSlotRemaining(state, Number(target.dataset.slotIndex), Number(target.value)));
+      } else if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
+        && target.matches('.simulation-input[data-simulation-field]')) {
+        updateState(setStableSimulationInput(state, getStableSimulationInputFromDom()));
       } else if (target instanceof HTMLInputElement && target.matches('#scriptLevelName')) {
         updateState(setScriptLevelName(state, target.value));
       } else if (target instanceof HTMLInputElement && target.matches('#scriptScreenshotFile') && target.files && target.files[0]) {
