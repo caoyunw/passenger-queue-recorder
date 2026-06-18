@@ -1854,6 +1854,14 @@
       return Number.isSafeInteger(number) && number > 0 ? number : null;
     }
 
+    function parseNonNegativeInteger(value) {
+      if (typeof value !== 'string' && typeof value !== 'number') return null;
+      const text = String(value).trim();
+      if (!/^\d+$/.test(text)) return null;
+      const number = Number(text);
+      return Number.isSafeInteger(number) && number >= 0 ? number : null;
+    }
+
     function parseScriptIdList(value) {
       if (typeof value !== 'string' || value.trim() === '') return { values: [], errors: [] };
       const values = [];
@@ -1926,7 +1934,7 @@
         const id = parsePositiveInteger(cells[0]);
         const colorValue = parsePositiveInteger(cells[1]);
         const capacity = parsePositiveInteger(cells[2]);
-        const depth = parsePositiveInteger(cells[3]);
+        const depth = parseNonNegativeInteger(cells[3]);
         const front = parseScriptIdList(cells[4] || '');
         const back = parseScriptIdList(cells[5] || '');
 
@@ -1934,7 +1942,7 @@
         if (id !== null && seenIds.has(id)) rowErrors.push(`车辆id ${id} 重复`);
         if (colorValue === null) rowErrors.push('车颜色必须是正整数映射值');
         if (!VEHICLE_CAPACITIES.includes(capacity)) rowErrors.push('车座位必须是 4、6 或 10');
-        if (depth === null) rowErrors.push('深度必须是正整数');
+        if (depth === null) rowErrors.push('深度必须是非负整数');
         rowErrors.push(...front.errors, ...back.errors);
 
         if (rowErrors.length > 0) {
@@ -2713,7 +2721,7 @@
         && mappedValues.has(vehicle.colorValue)
         && VEHICLE_CAPACITIES.includes(vehicle.capacity)
         && Number.isSafeInteger(vehicle.depth)
-        && vehicle.depth > 0
+        && vehicle.depth >= 0
         && isDenseArray(vehicle.frontVehicleIds)
         && vehicle.frontVehicleIds.every(id => Number.isSafeInteger(id) && id > 0)
         && isDenseArray(vehicle.backVehicleIds)

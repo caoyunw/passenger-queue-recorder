@@ -575,18 +575,21 @@
         test('剧本还原解析车辆表并报告非法行', () => {
           const table = [
             '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
-            '1\t1\t10\t1\t\t3,6',
+            '1\t1\t10\t0\t\t3,6',
             '2\t3\t6\t2\t7\t5,8',
             '2\t4\t5\t1\t\t'
           ].join('\n');
           const parsed = core.parseScriptVehicleTable(table);
           equal(parsed.vehicles, [
-            { id: 1, colorValue: 1, capacity: 10, depth: 1, frontVehicleIds: [], backVehicleIds: [3, 6] },
+            { id: 1, colorValue: 1, capacity: 10, depth: 0, frontVehicleIds: [], backVehicleIds: [3, 6] },
             { id: 2, colorValue: 3, capacity: 6, depth: 2, frontVehicleIds: [7], backVehicleIds: [5, 8] }
           ], '车辆表解析结果错误');
           assert(parsed.errors.some(error => error.includes('第 4 行')), '非法行未报告行号');
           assert(parsed.errors.some(error => error.includes('重复')), '重复 id 未报告');
           assert(parsed.errors.some(error => error.includes('座位')), '非法座位未报告');
+          const importedState = core.importScriptVehicleTable(core.createInitialState(), table);
+          equal(importedState.script.vehicles[0].depth, 0, '导入车辆表时深度 0 未保留');
+          assert(core.saveState(importedState), '深度 0 的车辆状态应允许本地保存');
         });
 
         test('剧本还原支持解析带引号的 CSV 车辆表', () => {
