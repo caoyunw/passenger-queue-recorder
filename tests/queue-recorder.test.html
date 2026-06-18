@@ -636,6 +636,17 @@
           equal(parsed.clickSequence, [1, 2], '点击序列解析错误');
         });
 
+        test('立即结算模拟器报告非法乘客队列 token 和未知颜色', () => {
+          const parsed = core.parseStableSimulationInput(core.createInitialState(), {
+            conveyorCapacity: '3',
+            passengerQueueText: '0,x,99',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0',
+            clickSequenceText: '1'
+          });
+          assert(parsed.errors.some(error => error.includes('x')), '非法乘客 token 未报告');
+          assert(parsed.errors.some(error => error.includes('99')), '未知乘客颜色未报告');
+        });
+
         test('立即结算模拟器点击可满员车辆后上客并开走', () => {
           const state = core.createInitialState();
           const result = core.runStableSimulation(state, {
@@ -667,6 +678,20 @@
           equal(result.finalSlots[0].vehicleId, 1, '先进入的车应仍在 1 号位');
           equal(result.finalSlots[0].remaining, 4, '先进入的车剩余座位错误');
           equal(result.finalSlots[1].vehicleId, 2, '第二辆车应占 2 号位');
+        });
+
+        test('立即结算模拟器不允许同一车辆重复进车', () => {
+          const result = core.runStableSimulation(core.createInitialState(), {
+            levelName: '',
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t0\t10\t0',
+            clickSequenceText: '1,1'
+          });
+          equal(result.steps[0].enteredSlot, 1, '第一次点击应成功进车');
+          equal(result.steps[1].enteredSlot, null, '重复点击不应再次进车');
+          assert(result.steps[1].warnings.some(warning => warning.includes('重复') || warning.includes('已被点击')), '重复点击应记录警告');
+          equal(result.finalSlots.filter(slot => slot && slot.vehicleId === 1).length, 1, '同一车辆不应占用多个车位');
         });
 
         test('立即结算模拟器无空车位时记录警告', () => {
