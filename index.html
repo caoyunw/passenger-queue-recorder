@@ -3349,7 +3349,7 @@
       state.script.hotspots.forEach(hotspot => {
         const isActive = hotspot.id === state.script.activeHotspotId;
         const isSaved = hotspot.status === 'saved';
-        const isSelected = hotspot.vehicleId > 0 && state.script.slots.some(slot => slot && slot.vehicleId === hotspot.vehicleId);
+        const isSelected = hotspot.vehicleId > 0 && state.script.pending.selectedVehicleIds.includes(hotspot.vehicleId);
         const marker = document.createElement('button');
         marker.className = `script-hotspot-marker${isActive ? ' is-active' : ''}${hotspot.vehicleId > 0 ? '' : ' needs-id'}${isSaved ? ' is-saved' : ' is-editing'}${isSelected ? ' is-selected' : ''}`;
         marker.type = 'button';
@@ -4087,6 +4087,14 @@
       return getScriptHotspotFieldUpdatesFromCard(card);
     }
 
+    function focusScriptHotspotVehicleIdInput(hotspotId) {
+      const idInput = workspace.querySelector(`.script-list-card[data-script-hotspot-card="${hotspotId}"] .script-hotspot-field[data-hotspot-field="vehicleId"]`);
+      if (idInput instanceof HTMLInputElement && !idInput.disabled) {
+        idInput.focus();
+        idInput.select();
+      }
+    }
+
     function saveScriptHotspotFromFields(currentState, hotspotId) {
       const updates = getScriptHotspotFieldUpdates(hotspotId);
       return updates ? updateScriptHotspot(currentState, hotspotId, { ...updates, status: 'saved' }) : currentState;
@@ -4195,9 +4203,11 @@
       } else if (target.matches('[data-action="activate-script-hotspot"][data-hotspot-id]')) {
         const hotspotId = Number(target.dataset.hotspotId);
         const hotspot = state.script.hotspots.find(item => item.id === hotspotId);
-        if (hotspot && hotspot.status !== 'saved' && state.script.activeHotspotId === hotspotId) {
-          const idInput = workspace.querySelector(`.script-list-card[data-script-hotspot-card="${hotspotId}"] .script-hotspot-field[data-hotspot-field="vehicleId"]`);
-          if (idInput instanceof HTMLInputElement) idInput.focus();
+        if (hotspot && hotspot.status !== 'saved') {
+          if (state.script.activeHotspotId !== hotspotId) {
+            updateState(setScriptActiveHotspot(state, hotspotId));
+          }
+          focusScriptHotspotVehicleIdInput(hotspotId);
           return;
         }
         let nextState = setScriptActiveHotspot(state, hotspotId);

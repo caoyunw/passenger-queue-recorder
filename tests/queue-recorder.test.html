@@ -50,7 +50,11 @@
     }
 
     iframe {
-      display: none;
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
     }
   </style>
 </head>
@@ -1022,6 +1026,7 @@
           equal(app.getState().script.activeHotspotId, 1, '点击未填 id 热区未定位到对应列表');
           equal(app.getState().script.pending.selectedVehicleIds, [], '点击未填 id 热区不应记录车辆');
           assert(appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"]').classList.contains('is-active'), '对应热区列表未高亮');
+          assert(appDocument.activeElement === appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] .script-hotspot-field[data-hotspot-field="vehicleId"]'), '可编辑热区第一次点击后应聚焦车辆 id 输入框');
           assert(appDocument.querySelector('.script-active-hotspot-note').textContent.includes('当前编辑热区 H1'), '热区定位提示不应写成选车');
           appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]').click();
           equal(app.getState().script.activeHotspotId, 2, '点击已填 id 热区未定位到对应列表');
@@ -1068,6 +1073,10 @@
           appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').click();
           equal(app.getState().script.pending.selectedVehicleIds, [1], '保存后点击截图热区未记录车辆');
           assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('✓'), '保存后点击截图热区未显示已选对勾');
+          appDocument.querySelector('[data-action="depart-script-slot"][data-slot-index="0"]').click();
+          assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('✓'), '本批已选车辆开走后，对应热区仍应显示已选对勾');
+          appDocument.querySelector('[data-action="record-script-batch"]').click();
+          assert(!appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('✓'), '记录本批次后，应清除截图热区已选对勾');
 
           const resetHotspotState = core.updateScriptHotspot(app.getState(), 1, { vehicleId: 0 });
           app.updateState({
@@ -1139,7 +1148,7 @@
     });
 
     localStorage.removeItem(STORAGE_KEY);
-    appFrame.src = '../index.html';
+    appFrame.src = `../index.html?test=${Date.now()}`;
   </script>
 </body>
 </html>
