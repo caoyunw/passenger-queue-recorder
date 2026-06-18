@@ -589,6 +589,20 @@
           assert(parsed.errors.some(error => error.includes('座位')), '非法座位未报告');
         });
 
+        test('剧本还原支持解析带引号的 CSV 车辆表', () => {
+          const table = [
+            '车辆id,车颜色,车座位,深度,前方车辆id,后方车辆id',
+            '1,1,10,1,,"3,6"',
+            '2,3,6,2,7,"5,8"'
+          ].join('\n');
+          const parsed = core.parseScriptVehicleTable(table);
+          equal(parsed.vehicles, [
+            { id: 1, colorValue: 1, capacity: 10, depth: 1, frontVehicleIds: [], backVehicleIds: [3, 6] },
+            { id: 2, colorValue: 3, capacity: 6, depth: 2, frontVehicleIds: [7], backVehicleIds: [5, 8] }
+          ], 'CSV 车辆表解析结果错误');
+          equal(parsed.errors, [], '合法 CSV 不应产生解析错误');
+        });
+
         test('剧本还原热区支持命中、修正和删除', () => {
           let state = core.importScriptVehicleTable(core.createInitialState(), '1\t1\t4\t1\t\t');
           state = core.addScriptHotspot(state, {
@@ -991,9 +1005,14 @@
           assert(appDocument.querySelector('.script-right-stack #scriptBatchTitle'), '操作批次记录应在右侧栏');
           const tableInput = appDocument.querySelector('#scriptVehicleTable');
           assert(tableInput, '车辆表输入框缺失');
+          const csvFileInput = appDocument.querySelector('#scriptVehicleCsvFile');
+          assert(csvFileInput && csvFileInput.accept.includes('.csv'), '车辆表 CSV 文件导入控件缺失');
           tableInput.value = '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id\n1\t1\t4\t1\t\t';
           appDocument.querySelector('[data-action="import-script-vehicles"]').click();
           equal(app.getState().script.vehicles[0].id, 1, '页面未导入车辆表');
+          appDocument.querySelector('#scriptVehicleTable').value = '车辆id,车颜色,车座位,深度,前方车辆id,后方车辆id\n1,3,6,1,,"2"';
+          appDocument.querySelector('[data-action="import-script-vehicles"]').click();
+          equal(app.getState().script.vehicles[0], { id: 1, colorValue: 3, capacity: 6, depth: 1, frontVehicleIds: [], backVehicleIds: [2] }, '页面未解析 CSV 车辆表');
           assert(appDocument.querySelector('.script-report').textContent.includes('批次时间线'), '页面未渲染剧本报告');
 
           let hotspotState = core.setScriptScreenshot(

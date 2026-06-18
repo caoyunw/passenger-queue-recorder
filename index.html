@@ -1869,9 +1869,40 @@
       return { values, errors };
     }
 
+    function splitCsvLine(line) {
+      const cells = [];
+      let cell = '';
+      let inQuotes = false;
+
+      for (let index = 0; index < line.length; index += 1) {
+        const char = line[index];
+        if (char === '"') {
+          if (inQuotes && line[index + 1] === '"') {
+            cell += '"';
+            index += 1;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          cells.push(cell);
+          cell = '';
+        } else {
+          cell += char;
+        }
+      }
+
+      cells.push(cell);
+      return cells.map(item => item.replace(/^\uFEFF/, '').trim());
+    }
+
     function splitScriptTableRow(line) {
-      const cells = line.split('\t').map(cell => cell.trim());
-      return cells.length > 1 ? cells : line.trim().split(/\s+/).map(cell => cell.trim());
+      const tabCells = line.split('\t').map(cell => cell.replace(/^\uFEFF/, '').trim());
+      if (tabCells.length > 1) return tabCells;
+      if (line.includes(',')) {
+        const cells = splitCsvLine(line);
+        return cells.length > 6 ? [...cells.slice(0, 5), cells.slice(5).join(',')] : cells;
+      }
+      return line.trim().split(/\s+/).map(cell => cell.replace(/^\uFEFF/, '').trim());
     }
 
     function parseScriptVehicleTable(text) {
@@ -3676,6 +3707,9 @@
               <section class="panel" aria-labelledby="scriptVehiclesTitle">
                 <p class="panel-label">03 / VEHICLE TABLE</p>
                 <h2 id="scriptVehiclesTitle">车辆数据表</h2>
+                <label class="script-field">导入 CSV 文件
+                  <input id="scriptVehicleCsvFile" class="script-input" type="file" accept=".csv,text/csv">
+                </label>
                 <textarea id="scriptVehicleTable" class="script-textarea" placeholder="车辆id&#9;车颜色&#9;车座位&#9;深度&#9;前方车辆id&#9;后方车辆id"></textarea>
                 <div class="action-row">
                   <button class="action-button primary" type="button" data-action="import-script-vehicles">解析车辆表</button>
@@ -3840,6 +3874,15 @@
         reader.addEventListener('load', () => resolve(String(reader.result || '')));
         reader.addEventListener('error', () => reject(reader.error || new Error('图片读取失败')));
         reader.readAsDataURL(file);
+      });
+    }
+
+    function readFileAsText(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.addEventListener('load', () => resolve(String(reader.result || '')));
+        reader.addEventListener('error', () => reject(reader.error || new Error('CSV 读取失败')));
+        reader.readAsText(file, 'UTF-8');
       });
     }
 
@@ -4268,6 +4311,18 @@
           updateState(setScriptScreenshot(state, dataUrl));
         }).catch(error => {
           updateState(setScriptOcrStatus(state, 'error', error && error.message ? error.message : '图片读取失败'));
+        });
+      } else if (target instanceof HTMLInputElement && target.matches('#scriptVehicleCsvFile') && target.files && target.files[0]) {
+        void readFileAsText(target.files[0]).then(text => {
+          const textarea = workspace.querySelector('#scriptVehicleTable');
+          if (textarea instanceof HTMLTextAreaElement) textarea.value = text;
+          updateState(importScriptVehicleTable(state, text));
+        }).catch(error => {
+          updateState(importScriptVehicleTable(state, ''));
+          const textarea = workspace.querySelector('#scriptVehicleTable');
+          if (textarea instanceof HTMLTextAreaElement) {
+            textarea.value = error && error.message ? error.message : 'CSV 读取失败';
+          }
         });
       }
     });
