@@ -1314,6 +1314,25 @@
           equal(app.getState().simulation, core.createInitialState().simulation, '清空模拟状态失败');
         });
 
+        test('立即结算模拟页面可点击车辆按钮追加序列并显示当前状态', () => {
+          appDocument.querySelector('.stage-button[data-stage="simulation"]').click();
+          appDocument.querySelector('.simulation-input[data-simulation-field="conveyorCapacity"]').value = '4';
+          appDocument.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]').value = '0,0,0,0,2,2';
+          appDocument.querySelector('.simulation-input[data-simulation-field="vehicleTableText"]').value = '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0\n2\t2\t6\t0';
+          appDocument.querySelector('[data-action="run-stable-simulation"]').click();
+
+          const vehicleButton = appDocument.querySelector('[data-action="append-stable-simulation-click"][data-vehicle-id="1"]');
+          assert(vehicleButton, '未生成车辆按钮 #1');
+          assert(vehicleButton.textContent.includes('#1红色4'), '车辆按钮文案错误');
+          vehicleButton.click();
+
+          equal(app.getState().simulation.clickSequenceText, '1', '点击车辆按钮未追加序列');
+          equal(appDocument.querySelector('.simulation-input[data-simulation-field="clickSequenceText"]').value, '1', '点击车辆后文本框未同步');
+          assert(appDocument.querySelector('.stable-simulation-slots').textContent.includes('空'), '未显示当前车位状态');
+          assert(appDocument.querySelector('.stable-simulation-belt').textContent.includes('2,2'), '未显示当前传送带状态');
+          assert(appDocument.querySelector('.script-report').textContent.includes('#1红色4'), '报告未显示点击车辆');
+        });
+
         test('热区手动改 id 后可保存，并通过列表或截图选车', () => {
           appDocument.querySelector('.stage-button[data-stage="script"]').click();
           let hotspotState = core.importScriptVehicleTable(app.getState(), '1\t1\t4\t1\t\t');

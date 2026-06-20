@@ -2324,6 +2324,20 @@
       };
     }
 
+    function getStableSimulationVehicleOptions(currentState) {
+      const parsed = parseScriptVehicleTable(currentState.simulation.vehicleTableText);
+      const vehicles = parsed.vehicles
+        .filter(vehicle => isScriptColorValue(currentState, vehicle.colorValue))
+        .sort((a, b) => a.id - b.id);
+      const errors = [
+        ...parsed.errors,
+        ...parsed.vehicles
+          .filter(vehicle => !isScriptColorValue(currentState, vehicle.colorValue))
+          .map(vehicle => `车辆 ${vehicle.id} 的颜色映射 ${vehicle.colorValue} 不存在`)
+      ];
+      return { vehicles, errors };
+    }
+
     function formatStableSimulationSlot(state, vehiclesById, slot, index) {
       if (!slot) return `${index + 1}:空`;
       return `${index + 1}:${formatStableSimulationVehicle(state, vehiclesById, slot.vehicleId)} 剩${slot.remaining}`;
@@ -4304,6 +4318,54 @@
       renderSavedScriptLevels(workspace.querySelector('.saved-script-list'));
     }
 
+    function renderStableSimulationVehicleButtons(container) {
+      if (!container) return;
+      const { vehicles, errors } = getStableSimulationVehicleOptions(state);
+      container.innerHTML = '';
+      if (errors.length > 0) {
+        const message = document.createElement('p');
+        message.className = 'empty-sequence';
+        message.textContent = errors.join('；');
+        container.append(message);
+        return;
+      }
+      if (vehicles.length === 0) {
+        const message = document.createElement('p');
+        message.className = 'empty-sequence';
+        message.textContent = '解析车辆表后会在这里生成可点击车辆。';
+        container.append(message);
+        return;
+      }
+      const vehiclesById = new Map(vehicles.map(vehicle => [vehicle.id, vehicle]));
+      vehicles.forEach(vehicle => {
+        const button = document.createElement('button');
+        button.className = 'action-button secondary';
+        button.type = 'button';
+        button.dataset.action = 'append-stable-simulation-click';
+        button.dataset.vehicleId = String(vehicle.id);
+        button.textContent = formatStableSimulationVehicle(state, vehiclesById, vehicle.id);
+        container.append(button);
+      });
+    }
+
+    function renderStableSimulationCurrentState(container) {
+      if (!container) return;
+      const result = state.simulation.result;
+      container.innerHTML = `
+        <div class="stable-simulation-slots"></div>
+        <div class="stable-simulation-belt"></div>
+        <div class="stable-simulation-reserve"></div>
+      `;
+      const slots = result ? result.finalSlots : [null, null, null, null];
+      const vehicles = getStableSimulationVehicleOptions(state).vehicles;
+      const vehiclesById = new Map(vehicles.map(vehicle => [vehicle.id, vehicle]));
+      container.querySelector('.stable-simulation-slots').textContent = slots
+        .map((slot, index) => slot ? formatStableSimulationSlot(state, vehiclesById, slot, index) : `${index + 1}:空`)
+        .join(' | ');
+      container.querySelector('.stable-simulation-belt').textContent = `传送带：${result ? (result.finalBelt.join(',') || '空') : '未运行'}`;
+      container.querySelector('.stable-simulation-reserve').textContent = `补充队列剩余：${result ? result.finalReserveQueue.length : '未运行'}`;
+    }
+
     function renderSimulationStage() {
       const report = getStableSimulationReportText(state);
       const stepCount = state.simulation.result ? state.simulation.result.steps.length : 0;
@@ -4339,6 +4401,10 @@
                 <label class="script-field">车辆数据表
                   <textarea class="script-textarea simulation-input" placeholder="车辆id&#9;车颜色&#9;车座位&#9;深度&#10;1&#9;0&#9;4&#9;0" data-simulation-field="vehicleTableText"></textarea>
                 </label>
+                <div class="script-field">
+                  <span>点击车辆</span>
+                  <div class="stable-simulation-vehicle-buttons action-row"></div>
+                </div>
                 <label class="script-field">点击车辆顺序
                   <textarea class="script-textarea simulation-input" placeholder="例如：1,2,3" data-simulation-field="clickSequenceText"></textarea>
                 </label>
@@ -4351,8 +4417,14 @@
             </div>
 
             <aside class="script-right-stack">
+              <section class="panel" aria-labelledby="simulationStateTitle">
+                <p class="panel-label">02 / CURRENT STATE</p>
+                <h2 id="simulationStateTitle">当前模拟状态</h2>
+                <div class="stable-simulation-current"></div>
+              </section>
+
               <section class="panel" aria-labelledby="simulationReportTitle">
-                <p class="panel-label">02 / REPORT</p>
+                <p class="panel-label">03 / REPORT</p>
                 <h2 id="simulationReportTitle">模拟报告</h2>
                 <pre class="script-report"></pre>
               </section>
@@ -4366,6 +4438,8 @@
       workspace.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]').value = state.simulation.passengerQueueText;
       workspace.querySelector('.simulation-input[data-simulation-field="vehicleTableText"]').value = state.simulation.vehicleTableText;
       workspace.querySelector('.simulation-input[data-simulation-field="clickSequenceText"]').value = state.simulation.clickSequenceText;
+      renderStableSimulationVehicleButtons(workspace.querySelector('.stable-simulation-vehicle-buttons'));
+      renderStableSimulationCurrentState(workspace.querySelector('.stable-simulation-current'));
       workspace.querySelector('.script-report').textContent = report;
     }
 
@@ -4860,6 +4934,11 @@
       } else if (target.matches('[data-action="clear-parking"]')
         && window.confirm('确定要清空全部车位和操作日志吗？')) {
         updateState(clearParking(state));
+      } else if (target.matches('[data-action="append-stable-simulation-click"][data-vehicle-id]')) {
+        updateState(appendStableSimulationClick(
+          setStableSimulationInput(state, getStableSimulationInputFromDom()),
+          Number(target.dataset.vehicleId)
+        ));
       } else if (target.matches('[data-action="run-stable-simulation"]')) {
         updateState(runStableSimulationState(setStableSimulationInput(state, getStableSimulationInputFromDom())));
       } else if (target.matches('[data-action="copy-stable-simulation-report"]')) {
