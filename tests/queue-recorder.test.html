@@ -617,10 +617,24 @@
           ].join('\n');
           const parsed = core.parseScriptVehicleTable(table);
           equal(parsed.vehicles, [
-            { id: 1, colorValue: 0, capacity: 10, depth: 1, frontVehicleIds: [], backVehicleIds: [3, 6] },
-            { id: 2, colorValue: 2, capacity: 6, depth: 2, frontVehicleIds: [7], backVehicleIds: [5, 8] }
+            { id: 1, colorValue: 2, capacity: 10, depth: 1, frontVehicleIds: [], backVehicleIds: [3, 6] },
+            { id: 2, colorValue: 4, capacity: 6, depth: 2, frontVehicleIds: [7], backVehicleIds: [5, 8] }
           ], 'CSV 车辆表解析结果错误');
           equal(parsed.errors, [], '合法 CSV 不应产生解析错误');
+        });
+
+        test('车辆 CSV 颜色映射会转换为乘客队列颜色映射', () => {
+          const table = [
+            '车辆id,车辆色,车座位,深度,前方车辆id,后方车辆id,车机制',
+            '1,0,4,0,,,',
+            '2,4,6,0,,,',
+            '3,5,10,0,,,',
+            '4,9,4,0,,,',
+            '5,10,4,0,,,'
+          ].join('\n');
+          const parsed = core.parseScriptVehicleTable(table);
+          equal(parsed.errors, [], '合法车辆 CSV 不应产生解析错误');
+          equal(parsed.vehicles.map(vehicle => vehicle.colorValue), [2, 0, 1, 10, 9], '车辆 CSV 颜色映射未转换为队列颜色映射');
         });
 
         test('立即结算模拟器按容量切分传送带并解析点击序列', () => {
@@ -1240,7 +1254,7 @@
           equal(app.getState().script.vehicles[0].id, 1, '页面未导入车辆表');
           appDocument.querySelector('#scriptVehicleTable').value = '车辆id,车颜色,车座位,深度,前方车辆id,后方车辆id\n1,3,6,1,,"2"';
           appDocument.querySelector('[data-action="import-script-vehicles"]').click();
-          equal(app.getState().script.vehicles[0], { id: 1, colorValue: 3, capacity: 6, depth: 1, frontVehicleIds: [], backVehicleIds: [2] }, '页面未解析 CSV 车辆表');
+          equal(app.getState().script.vehicles[0], { id: 1, colorValue: 5, capacity: 6, depth: 1, frontVehicleIds: [], backVehicleIds: [2] }, '页面未解析 CSV 车辆表');
           assert(appDocument.querySelector('.script-report').textContent.includes('批次时间线'), '页面未渲染剧本报告');
 
           let hotspotState = core.setScriptScreenshot(

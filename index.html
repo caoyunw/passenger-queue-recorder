@@ -1349,6 +1349,7 @@
     const SIMULATION_KEYS = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText', 'result', 'errors'];
     const VEHICLE_CAPACITIES = [4, 6, 10];
     const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/;
+    const VEHICLE_CSV_COLOR_TO_QUEUE_COLOR = [2, 3, 4, 5, 0, 1, 8, 6, 7, 10, 9];
     const DEFAULT_COLORS = [
       { name: '红色', value: 1, hex: '#e54c4c' },
       { name: '黄色', value: 2, hex: '#f3bd3d' },
@@ -1945,6 +1946,12 @@
       return line.trim().split(/\s+/).map(cell => cell.replace(/^\uFEFF/, '').trim());
     }
 
+    function mapVehicleCsvColorValue(value) {
+      return Number.isSafeInteger(value) && value >= 0 && value < VEHICLE_CSV_COLOR_TO_QUEUE_COLOR.length
+        ? VEHICLE_CSV_COLOR_TO_QUEUE_COLOR[value]
+        : null;
+    }
+
     function parseScriptVehicleTable(text) {
       if (typeof text !== 'string') return { vehicles: [], errors: ['车辆表必须是文本'] };
 
@@ -1955,6 +1962,7 @@
 
       lines.forEach((line, lineIndex) => {
         if (line.trim() === '') return;
+        const isCsvRow = !line.includes('\t') && line.includes(',');
         const cells = splitScriptTableRow(line);
         const lineNumber = lineIndex + 1;
         const maybeHeader = lineNumber === 1 && parsePositiveInteger(cells[0]) === null;
@@ -1964,7 +1972,8 @@
         if (cells.length < 4) rowErrors.push('字段不足，至少需要车辆id、车颜色、车座位、深度');
 
         const id = parsePositiveInteger(cells[0]);
-        const colorValue = parseNonNegativeInteger(cells[1]);
+        const rawColorValue = parseNonNegativeInteger(cells[1]);
+        const colorValue = rawColorValue !== null && isCsvRow ? mapVehicleCsvColorValue(rawColorValue) : rawColorValue;
         const capacity = parsePositiveInteger(cells[2]);
         const depth = parseNonNegativeInteger(cells[3]);
         const front = parseScriptIdList(cells[4] || '');
@@ -1972,7 +1981,8 @@
 
         if (id === null) rowErrors.push('车辆id必须是正整数');
         if (id !== null && seenIds.has(id)) rowErrors.push(`车辆id ${id} 重复`);
-        if (colorValue === null) rowErrors.push('车颜色必须是非负整数映射值');
+        if (rawColorValue === null) rowErrors.push('车颜色必须是非负整数映射值');
+        if (rawColorValue !== null && colorValue === null) rowErrors.push('CSV 车颜色必须是 0-10 的车辆颜色映射值');
         if (!VEHICLE_CAPACITIES.includes(capacity)) rowErrors.push('车座位必须是 4、6 或 10');
         if (depth === null) rowErrors.push('深度必须是非负整数');
         rowErrors.push(...front.errors, ...back.errors);
