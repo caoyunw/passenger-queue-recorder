@@ -693,6 +693,56 @@
       border: 1px solid var(--line);
     }
 
+    .stable-simulation-screenshot-stage {
+      position: relative;
+      display: grid;
+      place-items: center;
+      min-height: 220px;
+      margin-top: 12px;
+      overflow: hidden;
+      color: #eef3f1;
+      background: #2f3335;
+      border: 3px solid var(--ink);
+      box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.72);
+    }
+
+    .stable-simulation-screenshot-wrap {
+      position: relative;
+      display: inline-block;
+      max-width: 100%;
+      line-height: 0;
+      cursor: crosshair;
+    }
+
+    .stable-simulation-screenshot {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      user-select: none;
+    }
+
+    .stable-simulation-hotspot {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      min-width: 42px;
+      min-height: 32px;
+      padding: 4px 8px;
+      color: var(--ink);
+      background: rgba(242, 189, 67, 0.9);
+      border: 2px solid #fffdf7;
+      border-radius: 999px;
+      box-shadow: 0 0 0 3px rgba(23, 33, 38, 0.38);
+      font-size: 12px;
+      font-weight: 900;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .stable-simulation-empty-image {
+      padding: 24px;
+      text-align: center;
+    }
+
     .script-report {
       min-height: 260px;
       max-height: 520px;
@@ -921,7 +971,8 @@
     const STAGES = [...SECTIONS, 'configs', 'simulation'];
     const STATE_KEYS = ['colors', 'queues', 'histories', 'simulation', 'activeStage'];
     const COLOR_KEYS = ['name', 'value', 'hex'];
-    const SIMULATION_KEYS = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText', 'result', 'errors'];
+    const SIMULATION_KEYS = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText', 'screenshotDataUrl', 'hotspots', 'nextHotspotId', 'result', 'errors'];
+    const SIMULATION_HOTSPOT_KEYS = ['id', 'vehicleId', 'xPercent', 'yPercent'];
     const VEHICLE_CAPACITIES = [4, 6, 10];
     const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/;
     const VEHICLE_CSV_COLOR_TO_QUEUE_COLOR = [3, 4, 5, 6, 1, 2, 9, 7, 8, 11, 10];
@@ -950,6 +1001,9 @@
         passengerQueueText: '',
         vehicleTableText: '',
         clickSequenceText: '',
+        screenshotDataUrl: '',
+        hotspots: [],
+        nextHotspotId: 1,
         result: null,
         errors: []
       };
@@ -1485,6 +1539,55 @@
       };
     }
 
+    function clampPercent(value) {
+      return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : null;
+    }
+
+    function setStableSimulationScreenshot(state, dataUrl) {
+      if (!isValidState(state) || typeof dataUrl !== 'string') return state;
+      return {
+        ...state,
+        simulation: {
+          ...state.simulation,
+          screenshotDataUrl: dataUrl
+        }
+      };
+    }
+
+    function addStableSimulationHotspot(state, input) {
+      if (!isValidState(state) || !input || typeof input !== 'object') return state;
+      const vehicleId = parsePositiveInteger(input.vehicleId);
+      const xPercent = clampPercent(Number(input.xPercent));
+      const yPercent = clampPercent(Number(input.yPercent));
+      if (vehicleId === null || xPercent === null || yPercent === null) return state;
+
+      const hotspot = {
+        id: state.simulation.nextHotspotId,
+        vehicleId,
+        xPercent,
+        yPercent
+      };
+      return {
+        ...state,
+        simulation: {
+          ...state.simulation,
+          hotspots: [...state.simulation.hotspots, hotspot],
+          nextHotspotId: state.simulation.nextHotspotId + 1
+        }
+      };
+    }
+
+    function deleteStableSimulationHotspot(state, hotspotId) {
+      if (!isValidState(state) || !Number.isSafeInteger(hotspotId)) return state;
+      return {
+        ...state,
+        simulation: {
+          ...state.simulation,
+          hotspots: state.simulation.hotspots.filter(hotspot => hotspot.id !== hotspotId)
+        }
+      };
+    }
+
     function runStableSimulationState(state) {
       if (!isValidState(state)) return state;
       const result = runStableSimulation(state, state.simulation);
@@ -1525,6 +1628,12 @@
       return runStableSimulationState(setStableSimulationInput(state, {
         clickSequenceText: tokens.join(',')
       }));
+    }
+
+    function appendStableSimulationHotspotClick(state, hotspotId) {
+      if (!isValidState(state) || !Number.isSafeInteger(hotspotId)) return state;
+      const hotspot = state.simulation.hotspots.find(item => item.id === hotspotId);
+      return hotspot ? appendStableSimulationClick(state, hotspot.vehicleId) : state;
     }
 
     function undoStableSimulationClick(state) {
@@ -1695,6 +1804,20 @@
         && result.finalSlots.length === 4);
     }
 
+    function isValidSimulationHotspot(hotspot) {
+      return hasExactKeys(hotspot, SIMULATION_HOTSPOT_KEYS)
+        && Number.isSafeInteger(hotspot.id)
+        && hotspot.id > 0
+        && Number.isSafeInteger(hotspot.vehicleId)
+        && hotspot.vehicleId > 0
+        && Number.isFinite(hotspot.xPercent)
+        && hotspot.xPercent >= 0
+        && hotspot.xPercent <= 100
+        && Number.isFinite(hotspot.yPercent)
+        && hotspot.yPercent >= 0
+        && hotspot.yPercent <= 100;
+    }
+
     function isValidSimulation(simulation) {
       return hasExactKeys(simulation, SIMULATION_KEYS)
         && typeof simulation.levelName === 'string'
@@ -1702,6 +1825,11 @@
         && typeof simulation.passengerQueueText === 'string'
         && typeof simulation.vehicleTableText === 'string'
         && typeof simulation.clickSequenceText === 'string'
+        && typeof simulation.screenshotDataUrl === 'string'
+        && isDenseArray(simulation.hotspots)
+        && simulation.hotspots.every(isValidSimulationHotspot)
+        && Number.isSafeInteger(simulation.nextHotspotId)
+        && simulation.nextHotspotId > 0
         && isValidSimulationResult(simulation.result)
         && isDenseArray(simulation.errors)
         && simulation.errors.every(error => typeof error === 'string');
@@ -1791,9 +1919,13 @@
       parseStableSimulationInput,
       runStableSimulation,
       setStableSimulationInput,
+      setStableSimulationScreenshot,
+      addStableSimulationHotspot,
+      deleteStableSimulationHotspot,
       runStableSimulationState,
       clearStableSimulation,
       appendStableSimulationClick,
+      appendStableSimulationHotspotClick,
       undoStableSimulationClick,
       deleteStableSimulationClickAt,
       clearStableSimulationClicks,
@@ -2117,6 +2249,70 @@
       });
     }
 
+    function renderStableSimulationScreenshotPicker(stageContainer, listContainer) {
+      if (!stageContainer || !listContainer) return;
+      stageContainer.innerHTML = '';
+      listContainer.innerHTML = '';
+
+      if (!state.simulation.screenshotDataUrl) {
+        const empty = document.createElement('p');
+        empty.className = 'stable-simulation-empty-image';
+        empty.textContent = '导入停车场截图后，可输入车辆 id 并点击截图添加标记。';
+        stageContainer.append(empty);
+      } else {
+        const wrap = document.createElement('div');
+        wrap.className = 'stable-simulation-screenshot-wrap';
+        wrap.dataset.screenshotStage = 'stable-simulation';
+
+        const image = document.createElement('img');
+        image.className = 'stable-simulation-screenshot';
+        image.src = state.simulation.screenshotDataUrl;
+        image.alt = '停车场截图';
+        wrap.append(image);
+
+        state.simulation.hotspots.forEach(hotspot => {
+          const marker = document.createElement('button');
+          marker.className = 'stable-simulation-hotspot';
+          marker.type = 'button';
+          marker.dataset.action = 'append-stable-simulation-hotspot-click';
+          marker.dataset.hotspotId = String(hotspot.id);
+          marker.style.left = `${hotspot.xPercent}%`;
+          marker.style.top = `${hotspot.yPercent}%`;
+          marker.textContent = `#${hotspot.vehicleId}`;
+          marker.title = `记录车辆 #${hotspot.vehicleId}`;
+          wrap.append(marker);
+        });
+
+        stageContainer.append(wrap);
+      }
+
+      if (state.simulation.hotspots.length === 0) {
+        const emptyList = document.createElement('p');
+        emptyList.className = 'empty-sequence';
+        emptyList.textContent = '还没有车辆标记。';
+        listContainer.append(emptyList);
+        return;
+      }
+
+      state.simulation.hotspots.forEach(hotspot => {
+        const card = document.createElement('div');
+        card.className = 'script-list-card';
+        const title = document.createElement('strong');
+        title.textContent = `#${hotspot.vehicleId}`;
+        const detail = document.createElement('p');
+        detail.className = 'empty-sequence';
+        detail.textContent = `位置：${hotspot.xPercent.toFixed(1)}%, ${hotspot.yPercent.toFixed(1)}%`;
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'action-button danger';
+        deleteButton.type = 'button';
+        deleteButton.dataset.action = 'delete-stable-simulation-hotspot';
+        deleteButton.dataset.hotspotId = String(hotspot.id);
+        deleteButton.textContent = '删除标记';
+        card.append(title, detail, deleteButton);
+        listContainer.append(card);
+      });
+    }
+
     function renderSimulationStage() {
       const report = getStableSimulationReportText(state);
       const stepCount = state.simulation.result ? state.simulation.result.steps.length : 0;
@@ -2171,6 +2367,20 @@
                   <button class="action-button danger" type="button" data-action="clear-stable-simulation">清空模拟</button>
                 </div>
               </section>
+
+              <section class="panel" aria-labelledby="simulationScreenshotTitle">
+                <p class="panel-label">02 / SCREENSHOT PICKER</p>
+                <h2 id="simulationScreenshotTitle">截图选车</h2>
+                <label class="script-field">导入停车场截图
+                  <input id="simulationScreenshotFile" class="script-input" type="file" accept="image/*">
+                </label>
+                <label class="script-field">手动标记车辆 id
+                  <input id="simulationManualVehicleId" class="script-input" type="number" min="1" inputmode="numeric" placeholder="输入 id 后点击截图位置">
+                </label>
+                <p class="empty-sequence">先输入车辆 id 并点击截图添加标记；之后点击图上的 #id 标记即可记录选车顺序。</p>
+                <div class="stable-simulation-screenshot-stage"></div>
+                <div class="stable-simulation-hotspot-list script-list"></div>
+              </section>
             </div>
 
             <aside class="script-right-stack">
@@ -2204,6 +2414,10 @@
       renderStableSimulationVehicleButtons(workspace.querySelector('.stable-simulation-vehicle-buttons'));
       renderStableSimulationCurrentState(workspace.querySelector('.stable-simulation-current'));
       renderStableSimulationStepList(workspace.querySelector('.stable-simulation-step-list'));
+      renderStableSimulationScreenshotPicker(
+        workspace.querySelector('.stable-simulation-screenshot-stage'),
+        workspace.querySelector('.stable-simulation-hotspot-list')
+      );
       workspace.querySelector('.script-report').textContent = report;
     }
 
@@ -2260,6 +2474,15 @@
       URL.revokeObjectURL(url);
     }
 
+    function readFileAsDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.addEventListener('load', () => resolve(String(reader.result || '')));
+        reader.addEventListener('error', () => reject(reader.error || new Error('图片读取失败')));
+        reader.readAsDataURL(file);
+      });
+    }
+
     function readFileAsText(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -2314,6 +2537,24 @@
     });
 
     workspace.addEventListener('click', event => {
+      const screenshotWrap = event.target.closest('.stable-simulation-screenshot-wrap[data-screenshot-stage]');
+      if (screenshotWrap && state.activeStage === 'simulation' && !event.target.closest('button')) {
+        const idInput = workspace.querySelector('#simulationManualVehicleId');
+        const vehicleId = Number(idInput ? idInput.value : NaN);
+        const rect = screenshotWrap.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          updateState(addStableSimulationHotspot(
+            setStableSimulationInput(state, getStableSimulationInputFromDom()),
+            {
+              vehicleId,
+              xPercent: ((event.clientX - rect.left) / rect.width) * 100,
+              yPercent: ((event.clientY - rect.top) / rect.height) * 100
+            }
+          ));
+        }
+        return;
+      }
+
       const target = event.target.closest('button');
       if (!target) return;
 
@@ -2348,6 +2589,11 @@
           setStableSimulationInput(state, getStableSimulationInputFromDom()),
           Number(target.dataset.vehicleId)
         ));
+      } else if (target.matches('[data-action="append-stable-simulation-hotspot-click"][data-hotspot-id]')) {
+        updateState(appendStableSimulationHotspotClick(
+          setStableSimulationInput(state, getStableSimulationInputFromDom()),
+          Number(target.dataset.hotspotId)
+        ));
       } else if (target.matches('[data-action="run-stable-simulation"]')) {
         updateState(runStableSimulationState(setStableSimulationInput(state, getStableSimulationInputFromDom())));
       } else if (target.matches('[data-action="copy-stable-simulation-report"]')) {
@@ -2365,6 +2611,11 @@
         updateState(deleteStableSimulationClickAt(
           setStableSimulationInput(state, getStableSimulationInputFromDom()),
           Number(target.dataset.stepIndex)
+        ));
+      } else if (target.matches('[data-action="delete-stable-simulation-hotspot"][data-hotspot-id]')) {
+        updateState(deleteStableSimulationHotspot(
+          setStableSimulationInput(state, getStableSimulationInputFromDom()),
+          Number(target.dataset.hotspotId)
         ));
       } else if (target.matches('[data-action="clear-stable-simulation-clicks"]')
         && window.confirm('确定要清空点击车辆记录吗？基础输入会保留。')) {
@@ -2393,6 +2644,15 @@
           if (textarea instanceof HTMLTextAreaElement) {
             textarea.value = error && error.message ? error.message : 'CSV 读取失败';
           }
+        });
+      } else if (target instanceof HTMLInputElement && target.matches('#simulationScreenshotFile') && target.files && target.files[0]) {
+        void readFileAsDataUrl(target.files[0]).then(dataUrl => {
+          updateState(setStableSimulationScreenshot(
+            setStableSimulationInput(state, getStableSimulationInputFromDom()),
+            dataUrl
+          ));
+        }).catch(error => {
+          window.alert(error && error.message ? error.message : '图片读取失败');
         });
       }
     });
