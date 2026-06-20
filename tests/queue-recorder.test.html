@@ -1333,6 +1333,36 @@
           assert(appDocument.querySelector('.script-report').textContent.includes('#1红色4'), '报告未显示点击车辆');
         });
 
+        test('立即结算模拟页面支持撤销、删除步骤和清空点击记录', () => {
+          appDocument.querySelector('.stage-button[data-stage="simulation"]').click();
+          appDocument.querySelector('.simulation-input[data-simulation-field="conveyorCapacity"]').value = '4';
+          appDocument.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]').value = '0,0,0,0,2,2';
+          appDocument.querySelector('.simulation-input[data-simulation-field="vehicleTableText"]').value = '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0\n2\t2\t6\t0';
+          appDocument.querySelector('.simulation-input[data-simulation-field="clickSequenceText"]').value = '';
+          appDocument.querySelector('[data-action="run-stable-simulation"]').click();
+          appDocument.querySelector('[data-action="append-stable-simulation-click"][data-vehicle-id="1"]').click();
+          appDocument.querySelector('[data-action="append-stable-simulation-click"][data-vehicle-id="2"]').click();
+          equal(app.getState().simulation.clickSequenceText, '1,2', '前置点击序列错误');
+
+          const undoButton = appDocument.querySelector('[data-action="undo-stable-simulation-click"]');
+          assert(undoButton, '缺少撤销上一步按钮');
+          undoButton.click();
+          equal(app.getState().simulation.clickSequenceText, '1', '撤销按钮未删除最后一步');
+
+          appDocument.querySelector('[data-action="append-stable-simulation-click"][data-vehicle-id="2"]').click();
+          const deleteButton = appDocument.querySelector('[data-action="delete-stable-simulation-step"][data-step-index="0"]');
+          assert(deleteButton, '步骤日志缺少删除按钮');
+          deleteButton.click();
+          equal(app.getState().simulation.clickSequenceText, '2', '删除第 1 步按钮未重建序列');
+
+          const originalConfirm = appWindow.confirm;
+          appWindow.confirm = () => true;
+          appDocument.querySelector('[data-action="clear-stable-simulation-clicks"]').click();
+          appWindow.confirm = originalConfirm;
+          equal(app.getState().simulation.clickSequenceText, '', '清空点击记录按钮未清空序列');
+          equal(app.getState().simulation.conveyorCapacity, '4', '清空点击记录不应清空基础输入');
+        });
+
         test('热区手动改 id 后可保存，并通过列表或截图选车', () => {
           appDocument.querySelector('.stage-button[data-stage="script"]').click();
           let hotspotState = core.importScriptVehicleTable(app.getState(), '1\t1\t4\t1\t\t');

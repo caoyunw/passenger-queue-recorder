@@ -4366,6 +4366,43 @@
       container.querySelector('.stable-simulation-reserve').textContent = `补充队列剩余：${result ? result.finalReserveQueue.length : '未运行'}`;
     }
 
+    function renderStableSimulationStepList(container) {
+      if (!container) return;
+      const result = state.simulation.result;
+      container.innerHTML = '';
+      if (!result || result.steps.length === 0) {
+        const message = document.createElement('p');
+        message.className = 'empty-sequence';
+        message.textContent = result ? '已运行，暂无点击步骤。' : '点击车辆后会在这里生成步骤日志。';
+        container.append(message);
+        return;
+      }
+      const vehicles = getStableSimulationVehicleOptions(state).vehicles;
+      const vehiclesById = new Map(vehicles.map(vehicle => [vehicle.id, vehicle]));
+      result.steps.forEach((step, index) => {
+        const card = document.createElement('div');
+        card.className = 'script-list-card';
+        const title = document.createElement('strong');
+        title.textContent = `步骤 ${step.step}：${formatStableSimulationVehicle(state, vehiclesById, step.clickedVehicleId)}`;
+        const detail = document.createElement('p');
+        detail.className = 'empty-sequence';
+        detail.textContent = [
+          step.enteredSlot === null ? '进车失败' : `进车位 ${step.enteredSlot}`,
+          formatStableSimulationConsumption(state, vehiclesById, step.consumption),
+          step.departedVehicleIds.length ? `开走 ${step.departedVehicleIds.map(id => formatStableSimulationVehicle(state, vehiclesById, id)).join('、')}` : '无开走',
+          step.warnings.length ? `警告：${step.warnings.join('；')}` : '无警告'
+        ].join(' / ');
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'action-button danger';
+        deleteButton.type = 'button';
+        deleteButton.dataset.action = 'delete-stable-simulation-step';
+        deleteButton.dataset.stepIndex = String(index);
+        deleteButton.textContent = '删除此步';
+        card.append(title, detail, deleteButton);
+        container.append(card);
+      });
+    }
+
     function renderSimulationStage() {
       const report = getStableSimulationReportText(state);
       const stepCount = state.simulation.result ? state.simulation.result.steps.length : 0;
@@ -4411,6 +4448,8 @@
                 <div class="action-row">
                   <button class="action-button primary" type="button" data-action="run-stable-simulation">运行模拟</button>
                   <button class="action-button secondary" type="button" data-action="copy-stable-simulation-report">复制报告</button>
+                  <button class="action-button secondary" type="button" data-action="undo-stable-simulation-click">撤销上一步</button>
+                  <button class="action-button danger" type="button" data-action="clear-stable-simulation-clicks">清空点击记录</button>
                   <button class="action-button danger" type="button" data-action="clear-stable-simulation">清空模拟</button>
                 </div>
               </section>
@@ -4423,8 +4462,14 @@
                 <div class="stable-simulation-current"></div>
               </section>
 
+              <section class="panel" aria-labelledby="simulationStepsTitle">
+                <p class="panel-label">03 / STEP LOG</p>
+                <h2 id="simulationStepsTitle">点击日志</h2>
+                <div class="stable-simulation-step-list script-list"></div>
+              </section>
+
               <section class="panel" aria-labelledby="simulationReportTitle">
-                <p class="panel-label">03 / REPORT</p>
+                <p class="panel-label">04 / REPORT</p>
                 <h2 id="simulationReportTitle">模拟报告</h2>
                 <pre class="script-report"></pre>
               </section>
@@ -4440,6 +4485,7 @@
       workspace.querySelector('.simulation-input[data-simulation-field="clickSequenceText"]').value = state.simulation.clickSequenceText;
       renderStableSimulationVehicleButtons(workspace.querySelector('.stable-simulation-vehicle-buttons'));
       renderStableSimulationCurrentState(workspace.querySelector('.stable-simulation-current'));
+      renderStableSimulationStepList(workspace.querySelector('.stable-simulation-step-list'));
       workspace.querySelector('.script-report').textContent = report;
     }
 
@@ -4943,6 +4989,16 @@
         updateState(runStableSimulationState(setStableSimulationInput(state, getStableSimulationInputFromDom())));
       } else if (target.matches('[data-action="copy-stable-simulation-report"]')) {
         void copyText(getStableSimulationReportText(setStableSimulationInput(state, getStableSimulationInputFromDom())), target);
+      } else if (target.matches('[data-action="undo-stable-simulation-click"]')) {
+        updateState(undoStableSimulationClick(setStableSimulationInput(state, getStableSimulationInputFromDom())));
+      } else if (target.matches('[data-action="delete-stable-simulation-step"][data-step-index]')) {
+        updateState(deleteStableSimulationClickAt(
+          setStableSimulationInput(state, getStableSimulationInputFromDom()),
+          Number(target.dataset.stepIndex)
+        ));
+      } else if (target.matches('[data-action="clear-stable-simulation-clicks"]')
+        && window.confirm('确定要清空点击车辆记录吗？基础输入会保留。')) {
+        updateState(clearStableSimulationClicks(setStableSimulationInput(state, getStableSimulationInputFromDom())));
       } else if (target.matches('[data-action="clear-stable-simulation"]')
         && window.confirm('确定要清空立即结算模拟输入和结果吗？')) {
         updateState(clearStableSimulation(state));
