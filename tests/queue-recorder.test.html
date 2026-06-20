@@ -561,6 +561,19 @@
           equal(state.simulation, core.createInitialState().simulation, '清空模拟器状态失败');
         });
 
+        test('立即结算模拟器生成 Markdown 文件名', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            levelName: '第:1/关',
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t1\t4\t0',
+            clickSequenceText: '1'
+          });
+          equal(core.getStableSimulationMarkdownFilename(state), '第_1_关-立即结算模拟.md', 'Markdown 文件名未按关卡 id 清洗');
+          equal(core.getStableSimulationMarkdownFilename(core.createInitialState()), '未命名关卡-立即结算模拟.md', '空关卡 id 文件名错误');
+        });
+
         test('立即结算模拟器点击车辆函数会追加序列并自动运行', () => {
           let state = core.createInitialState();
           state = core.setStableSimulationInput(state, {
@@ -1021,6 +1034,37 @@
           assert(reportText.includes('开走'), '报告缺少开走');
           assert(reportText.includes('最终车位：空'), '报告缺少最终车位为空');
           equal(appDocument.querySelector('.count-card strong').textContent, '1', '运行后步骤数应为 1');
+
+          const downloadButton = appDocument.querySelector('[data-action="download-stable-simulation-md"]');
+          assert(downloadButton, '缺少导出 MD 按钮');
+          let capturedBlob = null;
+          let capturedDownload = '';
+          let capturedHref = '';
+          let revokedUrl = '';
+          const originalCreateObjectURL = appWindow.URL.createObjectURL;
+          const originalRevokeObjectURL = appWindow.URL.revokeObjectURL;
+          const originalAnchorClick = appWindow.HTMLAnchorElement.prototype.click;
+          appWindow.URL.createObjectURL = blob => {
+            capturedBlob = blob;
+            return 'blob:stable-simulation-report';
+          };
+          appWindow.URL.revokeObjectURL = url => {
+            revokedUrl = url;
+          };
+          appWindow.HTMLAnchorElement.prototype.click = function click() {
+            capturedDownload = this.download;
+            capturedHref = this.href;
+          };
+          downloadButton.click();
+          appWindow.URL.createObjectURL = originalCreateObjectURL;
+          appWindow.URL.revokeObjectURL = originalRevokeObjectURL;
+          appWindow.HTMLAnchorElement.prototype.click = originalAnchorClick;
+          assert(capturedBlob instanceof appWindow.Blob, '导出 MD 未生成 Blob');
+          assert(capturedBlob.type.includes('text/markdown'), '导出 Blob 类型不是 Markdown');
+          equal(capturedBlob.size, new appWindow.Blob([reportText], { type: 'text/markdown;charset=utf-8' }).size, '导出内容大小应与报告文本一致');
+          equal(capturedDownload, '未命名关卡-立即结算模拟.md', '导出文件名错误');
+          equal(capturedHref, 'blob:stable-simulation-report', '导出未使用创建的对象 URL');
+          equal(revokedUrl, 'blob:stable-simulation-report', '导出后未释放对象 URL');
 
           const originalConfirm = appWindow.confirm;
           appWindow.confirm = () => true;

@@ -1633,6 +1633,18 @@
       return lines.join('\n');
     }
 
+    function getSafeStableSimulationFilenamePart(value) {
+      const name = String(value || '').trim()
+        .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+        .replace(/\s+/g, ' ');
+      return name || '未命名关卡';
+    }
+
+    function getStableSimulationMarkdownFilename(state) {
+      if (!isValidState(state)) return '立即结算模拟.md';
+      return `${getSafeStableSimulationFilenamePart(state.simulation.levelName)}-立即结算模拟.md`;
+    }
+
     function isMappedValue(state, value) {
       return Boolean(state
         && Array.isArray(state.colors)
@@ -1786,6 +1798,7 @@
       deleteStableSimulationClickAt,
       clearStableSimulationClicks,
       getStableSimulationReportText,
+      getStableSimulationMarkdownFilename,
       startNextLevel,
       resetEverything,
       loadState,
@@ -2152,6 +2165,7 @@
                 <div class="action-row">
                   <button class="action-button primary" type="button" data-action="run-stable-simulation">运行模拟</button>
                   <button class="action-button secondary" type="button" data-action="copy-stable-simulation-report">复制报告</button>
+                  <button class="action-button secondary" type="button" data-action="download-stable-simulation-md">导出 MD</button>
                   <button class="action-button secondary" type="button" data-action="undo-stable-simulation-click">撤销上一步</button>
                   <button class="action-button danger" type="button" data-action="clear-stable-simulation-clicks">清空点击记录</button>
                   <button class="action-button danger" type="button" data-action="clear-stable-simulation">清空模拟</button>
@@ -2231,6 +2245,19 @@
         button.textContent = '复制失败';
         return false;
       }
+    }
+
+    function downloadTextFile(filename, text, mimeType = 'text/plain;charset=utf-8') {
+      const blob = new Blob([text], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
     }
 
     function readFileAsText(file) {
@@ -2325,6 +2352,13 @@
         updateState(runStableSimulationState(setStableSimulationInput(state, getStableSimulationInputFromDom())));
       } else if (target.matches('[data-action="copy-stable-simulation-report"]')) {
         void copyText(getStableSimulationReportText(setStableSimulationInput(state, getStableSimulationInputFromDom())), target);
+      } else if (target.matches('[data-action="download-stable-simulation-md"]')) {
+        const reportState = setStableSimulationInput(state, getStableSimulationInputFromDom());
+        downloadTextFile(
+          getStableSimulationMarkdownFilename(reportState),
+          getStableSimulationReportText(reportState),
+          'text/markdown;charset=utf-8'
+        );
       } else if (target.matches('[data-action="undo-stable-simulation-click"]')) {
         updateState(undoStableSimulationClick(setStableSimulationInput(state, getStableSimulationInputFromDom())));
       } else if (target.matches('[data-action="delete-stable-simulation-step"][data-step-index]')) {
