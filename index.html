@@ -4438,6 +4438,9 @@
                 <label class="script-field">车辆数据表
                   <textarea class="script-textarea simulation-input" placeholder="车辆id&#9;车颜色&#9;车座位&#9;深度&#10;1&#9;0&#9;4&#9;0" data-simulation-field="vehicleTableText"></textarea>
                 </label>
+                <label class="script-field">导入 CSV 文件
+                  <input id="simulationVehicleCsvFile" class="script-input" type="file" accept=".csv,text/csv">
+                </label>
                 <div class="script-field">
                   <span>点击车辆</span>
                   <div class="stable-simulation-vehicle-buttons action-row"></div>
@@ -5099,6 +5102,20 @@
       } else if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
         && target.matches('.simulation-input[data-simulation-field]')) {
         updateState(setStableSimulationInput(state, getStableSimulationInputFromDom()));
+      } else if (target instanceof HTMLInputElement && target.matches('#simulationVehicleCsvFile') && target.files && target.files[0]) {
+        void readFileAsText(target.files[0]).then(text => {
+          const textarea = workspace.querySelector('.simulation-input[data-simulation-field="vehicleTableText"]');
+          if (textarea instanceof HTMLTextAreaElement) textarea.value = text;
+          updateState(setStableSimulationInput(state, {
+            ...getStableSimulationInputFromDom(),
+            vehicleTableText: text
+          }));
+        }).catch(error => {
+          const textarea = workspace.querySelector('.simulation-input[data-simulation-field="vehicleTableText"]');
+          if (textarea instanceof HTMLTextAreaElement) {
+            textarea.value = error && error.message ? error.message : 'CSV 读取失败';
+          }
+        });
       } else if (target instanceof HTMLInputElement && target.matches('#scriptLevelName')) {
         updateState(setScriptLevelName(state, target.value));
       } else if (target instanceof HTMLInputElement && target.matches('#scriptScreenshotFile') && target.files && target.files[0]) {

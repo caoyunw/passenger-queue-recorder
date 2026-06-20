@@ -1292,6 +1292,8 @@
           fields.forEach(field => {
             assert(appDocument.querySelector(`.simulation-input[data-simulation-field="${field}"]`), `缺少 ${field} 输入控件`);
           });
+          const csvFileInput = appDocument.querySelector('#simulationVehicleCsvFile');
+          assert(csvFileInput && csvFileInput.accept.includes('.csv'), '立即结算模拟车辆表 CSV 文件导入控件缺失');
 
           appDocument.querySelector('.simulation-input[data-simulation-field="conveyorCapacity"]').value = '4';
           appDocument.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]').value = '0,0,0,0,2,2';
