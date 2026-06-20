@@ -88,41 +88,6 @@
       { name: '白色', value: 11, hex: '#f7f7f2' }
     ];
     const EMPTY_SECTIONS = { conveyor: [], left: [], right: [] };
-    const EMPTY_PARKING = {
-      slots: [null, null, null, null],
-      logs: [],
-      nextVehicleId: 1,
-      savedGames: [],
-      nextGameId: 1,
-      pending: {
-        selectedVehicle: '',
-        enteredSlot: '',
-        departedVehicles: [],
-        occupancyDurations: []
-      }
-    };
-    const EMPTY_SCRIPT = {
-      levelName: '',
-      queuesText: { conveyor: '', left: '', right: '' },
-      vehicleTableText: '',
-      vehicles: [],
-      vehicleErrors: [],
-      screenshotDataUrl: '',
-      hotspots: [],
-      nextHotspotId: 1,
-      activeHotspotId: null,
-      slots: [null, null, null, null],
-      batches: [],
-      pending: {
-        selectedVehicleIds: [],
-        enteredSlots: [],
-        departedVehicleIds: []
-      },
-      savedLevels: [],
-      nextLevelId: 1,
-      ocrStatus: 'idle',
-      ocrError: ''
-    };
 
     function assert(condition, message) {
       if (!condition) throw new Error(message);
@@ -302,8 +267,8 @@
           equal(state.colors, DEFAULT_COLORS, '默认颜色错误');
           equal(state.queues, EMPTY_SECTIONS, '初始队列应为空');
           equal(state.histories, EMPTY_SECTIONS, '初始撤销历史应为空');
-          equal(state.parking, EMPTY_PARKING, '初始车位记录应为空');
-          equal(state.script, EMPTY_SCRIPT, '初始剧本还原数据应为空');
+          assert(!Object.prototype.hasOwnProperty.call(state, 'parking'), '初始状态不应再包含车位记录');
+          assert(!Object.prototype.hasOwnProperty.call(state, 'script'), '初始状态不应再包含剧本还原数据');
           equal(state.activeStage, 'conveyor', '初始阶段错误');
         });
 
@@ -488,107 +453,12 @@
           equal(state.colors, DEFAULT_COLORS, '默认颜色未恢复');
           equal(state.queues, EMPTY_SECTIONS, '队列未清空');
           equal(state.histories, EMPTY_SECTIONS, '撤销历史未清空');
-          equal(state.parking, EMPTY_PARKING, '车位记录未清空');
-          equal(state.script, EMPTY_SCRIPT, '剧本还原数据未清空');
+          assert(!Object.prototype.hasOwnProperty.call(state, 'parking'), '彻底重置后不应再包含车位记录');
+          assert(!Object.prototype.hasOwnProperty.call(state, 'script'), '彻底重置后不应再包含剧本还原数据');
           equal(state.activeStage, 'conveyor', '彻底重置应恢复到传送带阶段');
         });
 
-        test('车位记录按最靠左空位进车并支持修正剩余座位', () => {
-          let state = core.createInitialState();
-          state = core.addVehicle(state, 1, 4);
-          equal(state.parking.slots[0], { id: 1, colorValue: 1, capacity: 4, remaining: 4, enteredStep: 1 }, '首辆车应进入 1 号位');
-          equal(state.parking.nextVehicleId, 2, '车辆 id 未递增');
-          state = core.updateVehicleRemaining(state, 0, 2);
-          equal(state.parking.slots[0].remaining, 2, '剩余座位未更新');
-          state = core.addVehicle(state, 3, 6);
-          equal(state.parking.slots[1], { id: 2, colorValue: 3, capacity: 6, remaining: 6, enteredStep: 1 }, '第二辆车应进入 2 号位');
-        });
-
-        test('车位记录支持开走车辆后复用最靠左空位', () => {
-          let state = core.createInitialState();
-          state = core.addVehicle(state, 1, 4);
-          state = core.addVehicle(state, 2, 6);
-          state = core.departVehicle(state, 0);
-          equal(state.parking.slots, [null, { id: 2, colorValue: 2, capacity: 6, remaining: 6, enteredStep: 1 }, null, null], '开走车辆后车位状态错误');
-          state = core.addVehicle(state, 3, 10);
-          equal(state.parking.slots[0], { id: 3, colorValue: 3, capacity: 10, remaining: 10, enteredStep: 1 }, '新车应复用 1 号空位');
-        });
-
-        test('parking batch log exports Feishu table text', () => {
-          let state = core.createInitialState();
-          state = core.addVehicle(state, 1, 4);
-          state = core.updateVehicleRemaining(state, 0, 2);
-          state = core.recordParkingStep(state, '\u7ea2\u8f66\u5148\u5403 2 \u4eba');
-          state = core.addVehicle(state, 3, 6);
-          state = core.departVehicle(state, 0);
-          state = core.updateVehicleRemaining(state, 1, 5);
-          state = core.recordParkingStep(state, '');
-
-          equal(state.parking.logs.length, 2, 'log count should be 2');
-          equal(state.parking.logs[0].selectedVehicle, '\u7ea2\u82724', 'first batch selected vehicle mismatch');
-          equal(state.parking.logs[0].enteredSlot, '\u7ea2\u82724->1', 'first batch entry order mismatch');
-          equal(state.parking.logs[1].departedVehicles, '\u7ea2\u82724', 'departed vehicle mismatch');
-          equal(state.parking.logs[1].occupancyDurations, '\u7ea2\u82724\uff1a1\u21922\uff0c\u51712\u6b65', 'occupancy duration mismatch');
-          equal(
-            core.getParkingLogText(state).split('\n'),
-            [
-              '\u6279\u6b21\t\u672c\u6279\u6b21\u9009\u62e9\u8f66\u8f86\t\u8fdb\u5165\u8f66\u4f4d\u987a\u5e8f\t1\u53f7\u8f66\u4f4d\t2\u53f7\u8f66\u4f4d\t3\u53f7\u8f66\u4f4d\t4\u53f7\u8f66\u4f4d\t\u5f00\u8d70\u8f66\u8f86\t\u5360\u4f4d\u65f6\u957f\t\u5907\u6ce8',
-              '1\t\u7ea2\u82724\t\u7ea2\u82724->1\t\u7ea2\u82724\u52692\t\u7a7a\t\u7a7a\t\u7a7a\t\t\t\u7ea2\u8f66\u5148\u5403 2 \u4eba',
-              '2\t\u84dd\u82726\t\u84dd\u82726->2\t\u7a7a\t\u84dd\u82726\u52695\t\u7a7a\t\u7a7a\t\u7ea2\u82724\t\u7ea2\u82724\uff1a1\u21922\uff0c\u51712\u6b65\t'
-            ],
-            'exported batch log text mismatch'
-          );
-        });
-
-        test('parking batch can include multiple selected vehicles before one snapshot', () => {
-          let state = core.createInitialState();
-          state = core.addVehicle(state, 1, 4);
-          state = core.addVehicle(state, 3, 6);
-          state = core.updateVehicleRemaining(state, 0, 2);
-          state = core.updateVehicleRemaining(state, 1, 5);
-          state = core.recordParkingStep(state, '\u4e00\u6279\u4e24\u8f66');
-          equal(state.parking.logs.length, 1, 'same batch should create one log');
-          equal(state.parking.logs[0].selectedVehicle, '\u7ea2\u82724,\u84dd\u82726', 'batch selected vehicle order mismatch');
-          equal(state.parking.logs[0].enteredSlot, '\u7ea2\u82724->1,\u84dd\u82726->2', 'batch entry order mismatch');
-          equal(core.getParkingLogText(state).split('\n')[1], '1\t\u7ea2\u82724,\u84dd\u82726\t\u7ea2\u82724->1,\u84dd\u82726->2\t\u7ea2\u82724\u52692\t\u84dd\u82726\u52695\t\u7a7a\t\u7a7a\t\t\t\u4e00\u6279\u4e24\u8f66', 'batch export mismatch');
-        });
-        test('跨多步开走车辆时记录占用车位步数', () => {
-          let state = core.createInitialState();
-          state = core.addVehicle(state, 1, 4);
-          state = core.recordParkingStep(state, '红4进场');
-          state = core.addVehicle(state, 2, 4);
-          state = core.recordParkingStep(state, '第二步');
-          state = core.updateVehicleRemaining(state, 1, 1);
-          state = core.recordParkingStep(state, '第三步');
-          state = core.addVehicle(state, 3, 6);
-          state = core.recordParkingStep(state, '第四步');
-          state = core.departVehicle(state, 0);
-          state = core.recordParkingStep(state, '红4开走');
-          equal(state.parking.logs[4].departedVehicles, '红色4', '第 5 步开走车辆记录错误');
-          equal(state.parking.logs[4].occupancyDurations, '红色4：1→5，共5步', '跨步骤占位时长错误');
-        });
-
-        test('车位记录支持保存、加载和删除单局记录', () => {
-          let state = core.createInitialState();
-          state = core.addVehicle(state, 1, 4);
-          state = core.updateVehicleRemaining(state, 0, 2);
-          state = core.recordParkingStep(state, '第一局');
-          state = core.saveParkingGame(state, '1', '2');
-          equal(state.parking.savedGames.length, 1, '单局记录未保存');
-          equal(state.parking.savedGames[0].name, '第1关第2局', '单局记录名称错误');
-          equal(state.parking.savedGames[0].logs[0].slots[0], '红色4剩2', '单局日志快照错误');
-          equal(state.parking.nextGameId, 2, '单局 id 未递增');
-
-          state = core.clearParking(state);
-          equal(state.parking.savedGames.length, 1, '清空当前车位不应删除已保存单局');
-          state = core.loadParkingGame(state, 1);
-          equal(state.parking.logs[0].note, '第一局', '加载单局记录失败');
-          equal(core.getSavedParkingGameText(state, 1).split('\n')[1], '1\t\u7ea2\u82724\t\u7ea2\u82724->1\t\u7ea2\u82724\u52692\t\u7a7a\t\u7a7a\t\u7a7a\t\t\t\u7b2c\u4e00\u5c40', 'saved game export mismatch');
-          state = core.deleteParkingGame(state, 1);
-          equal(state.parking.savedGames, [], '删除单局记录失败');
-        });
-
-        test('剧本还原解析车辆表并报告非法行', () => {
+        test('车辆表解析并报告非法行', () => {
           const table = [
             '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
             '1\t1\t10\t0\t\t3,6',
@@ -603,13 +473,9 @@
           assert(parsed.errors.some(error => error.includes('第 4 行')), '非法行未报告行号');
           assert(parsed.errors.some(error => error.includes('重复')), '重复 id 未报告');
           assert(parsed.errors.some(error => error.includes('座位')), '非法座位未报告');
-          const importedState = core.importScriptVehicleTable(core.createInitialState(), table);
-          equal(importedState.script.vehicles[0].colorValue, 1, '导入车辆表时颜色 1 未保留');
-          equal(importedState.script.vehicles[0].depth, 0, '导入车辆表时深度 0 未保留');
-          assert(core.saveState(importedState), '深度 0 的车辆状态应允许本地保存');
         });
 
-        test('剧本还原支持解析带引号的 CSV 车辆表', () => {
+        test('车辆表支持解析带引号的 CSV', () => {
           const table = [
             '车辆id,车颜色,车座位,深度,前方车辆id,后方车辆id',
             '1,0,10,1,,"3,6"',
@@ -829,116 +695,6 @@
           equal(result.finalSlots.map(slot => slot && slot.vehicleId), [1, 2, 3, 4], '无空车位时不应覆盖已有车位');
         });
 
-        test('OCR 数字只补充颜色块热区 id，不额外生成文字框热区', () => {
-          const merged = core.mergeOcrDetectionsWithRegions([
-            { vehicleId: 73, xPercent: 50, yPercent: 50, widthPercent: 4, heightPercent: 4, confidence: 88 },
-            { vehicleId: 99, xPercent: 90, yPercent: 90, widthPercent: 4, heightPercent: 4, confidence: 91 }
-          ], [
-            { vehicleId: 0, xPercent: 50, yPercent: 50, widthPercent: 20, heightPercent: 10, confidence: null }
-          ]);
-          equal(merged, [
-            { vehicleId: 73, xPercent: 50, yPercent: 50, widthPercent: 20, heightPercent: 10, confidence: 88 }
-          ], 'OCR 不应把未命中颜色块的文字框生成独立热区');
-        });
-
-        test('剧本还原热区支持命中、修正和删除', () => {
-          let state = core.importScriptVehicleTable(core.createInitialState(), '1\t1\t4\t1\t\t');
-          state = core.addScriptHotspot(state, {
-            vehicleId: 1,
-            xPercent: 50,
-            yPercent: 40,
-            widthPercent: 20,
-            heightPercent: 10,
-            source: 'manual'
-          });
-          equal(core.findScriptHotspotAt(state, 50, 40).vehicleId, 1, '热区中心未命中');
-          equal(core.findScriptHotspotAt(state, 61, 40), null, '热区外不应命中');
-          equal(state.script.activeHotspotId, 1, '新增热区后未选中当前热区');
-          state = core.updateScriptHotspot(state, 1, { vehicleId: 2, xPercent: 25 });
-          equal(state.script.activeHotspotId, 1, '编辑热区后未保持当前热区');
-          equal(state.script.hotspots[0].vehicleId, 2, '热区车辆 id 未修正');
-          equal(state.script.hotspots[0].xPercent, 25, '热区 x 坐标未修正');
-          state = core.setScriptActiveHotspot(state, 1);
-          equal(state.script.activeHotspotId, 1, '手动选中热区失败');
-          state = core.deleteScriptHotspot(state, 1);
-          equal(state.script.hotspots, [], '热区未删除');
-          equal(state.script.activeHotspotId, null, '删除当前热区后未清空选中状态');
-        });
-
-        test('OCR 未识别 id 时仍生成可修正热区，修正后可点击记录车辆', () => {
-          let state = core.importScriptVehicleTable(core.createInitialState(), '1\t1\t4\t1\t\t');
-          state = core.applyScriptOcrDetections(state, [{
-            vehicleId: 0,
-            xPercent: 42,
-            yPercent: 36,
-            widthPercent: 14,
-            heightPercent: 9,
-            confidence: null
-          }]);
-          equal(state.script.hotspots.length, 1, 'OCR 未生成占位热区');
-          equal(state.script.hotspots[0].vehicleId, 0, '占位热区应允许待修正 id');
-          state = core.updateScriptHotspot(state, 1, { vehicleId: 1 });
-          state = core.selectScriptVehicleAt(state, 42, 36);
-          equal(state.script.activeHotspotId, 1, '点击热区记录车辆时未同步选中热区');
-          equal(state.script.pending.selectedVehicleIds, [], '可编辑热区点击不应记录车辆');
-          state = core.updateScriptHotspot(state, 1, { status: 'saved' });
-          state = core.selectScriptVehicleAt(state, 42, 36);
-          equal(state.script.pending.selectedVehicleIds, [1], '修正热区后点击未记录车辆');
-          equal(state.script.pending.enteredSlots, [{ vehicleId: 1, slot: 1 }], '修正热区后入位错误');
-        });
-
-        test('剧本还原点击热区生成批次并反推乘客消耗', () => {
-          let state = core.createInitialState();
-          state = core.setScriptQueuesText(state, {
-            conveyor: '1,1,1,1,3,3',
-            left: '',
-            right: ''
-          });
-          state = core.importScriptVehicleTable(state, [
-            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
-            '1\t1\t4\t1\t\t2',
-            '2\t3\t6\t2\t1\t'
-          ].join('\n'));
-          state = core.addScriptHotspot(state, { vehicleId: 1, xPercent: 20, yPercent: 30, widthPercent: 12, heightPercent: 12, source: 'manual', status: 'saved' });
-          state = core.addScriptHotspot(state, { vehicleId: 2, xPercent: 55, yPercent: 35, widthPercent: 12, heightPercent: 12, source: 'manual', status: 'saved' });
-          state = core.selectScriptVehicleAt(state, 20, 30);
-          state = core.selectScriptVehicleAt(state, 55, 35);
-          equal(state.script.pending.selectedVehicleIds, [1, 2], '点击热区未生成本批选择车辆');
-          equal(state.script.pending.enteredSlots, [{ vehicleId: 1, slot: 1 }, { vehicleId: 2, slot: 2 }], '进入车位顺序错误');
-          state = core.updateScriptSlotRemaining(state, 0, 1);
-          state = core.updateScriptSlotRemaining(state, 1, 6);
-          state = core.recordScriptBatch(state, '红车吃 3 人，蓝车占位');
-          equal(state.script.batches.length, 1, '未生成批次记录');
-          equal(state.script.batches[0].slotSnapshots[0], { slot: 1, vehicleId: 1, remaining: 1, capacity: 4 }, '车位快照错误');
-          const report = core.getScriptReportText(state);
-          assert(report.includes('红色x3'), '报告未反推红色乘客消耗');
-          assert(report.includes('#2蓝色6'), '报告未标出蓝车');
-          assert(report.includes('障碍车'), '报告未标出未吃客占位车辆');
-          state = core.setScriptLevelName(state, '第12关');
-          const markdown = core.getScriptMarkdownText(state);
-          assert(markdown.startsWith('# 第12关 剧本还原'), 'Markdown 标题未包含关卡 id');
-          assert(markdown.includes('## 乘客队列配置'), 'Markdown 未包含乘客队列配置');
-          assert(markdown.includes('传送带：1,1,1,1,3,3'), 'Markdown 未包含传送带配置');
-          assert(markdown.includes('## 车辆数据表'), 'Markdown 未包含车辆数据表');
-          assert(markdown.includes('| 1 | 红色 | 4 | 1 |  | 2 |'), 'Markdown 未包含车辆数据行');
-          assert(markdown.includes('## 操作日志'), 'Markdown 未包含操作日志');
-          assert(markdown.includes('红色x3'), 'Markdown 未包含上客反推');
-          assert(markdown.includes('## 设计摘要'), 'Markdown 未包含设计摘要');
-        });
-
-        test('剧本还原支持保存和载入关卡数据', () => {
-          let state = core.importScriptVehicleTable(core.createInitialState(), '1\t1\t4\t1\t\t');
-          state = core.addScriptHotspot(state, { vehicleId: 1, xPercent: 50, yPercent: 50, widthPercent: 10, heightPercent: 10, source: 'manual' });
-          state = core.saveScriptLevel(state, '第12关');
-          equal(state.script.savedLevels.length, 1, '关卡未保存');
-          equal(state.script.savedLevels[0].name, '第12关', '关卡名称错误');
-          state = core.clearScriptWorkspace(state);
-          equal(state.script.vehicles, [], '清空工作区失败');
-          state = core.loadScriptLevel(state, 1);
-          equal(state.script.vehicles[0].id, 1, '载入关卡车辆表失败');
-          equal(state.script.hotspots[0].vehicleId, 1, '载入关卡热区失败');
-        });
-
         test('核心状态操作不突变输入状态', () => {
           const appendInput = core.createInitialState();
           assertPure('appendValue()', appendInput, () => core.appendValue(appendInput, 'conveyor', 1));
@@ -976,6 +732,23 @@
           const storedState = { ...core.createInitialState(), activeStage: 'configs' };
           const loadedState = withStoredState(JSON.stringify(storedState), () => core.loadState());
           equal(loadedState, storedState, 'configs 阶段应可恢复');
+        });
+
+        test('本地恢复会丢弃旧版车位和剧本字段', () => {
+          const storedState = {
+            ...core.appendValue(core.createInitialState(), 'left', 2),
+            parking: { legacy: true },
+            script: { legacy: true },
+            activeStage: 'simulation'
+          };
+          const expectedState = {
+            ...core.appendValue(core.createInitialState(), 'left', 2),
+            activeStage: 'simulation'
+          };
+          const loadedState = withStoredState(JSON.stringify(storedState), () => core.loadState());
+          equal(loadedState, expectedState, '旧版字段应在恢复时被丢弃');
+          assert(!Object.prototype.hasOwnProperty.call(loadedState, 'parking'), '恢复后不应保留旧车位字段');
+          assert(!Object.prototype.hasOwnProperty.call(loadedState, 'script'), '恢复后不应保留旧剧本字段');
         });
 
         test('本地恢复遇到损坏或非法状态时回退初始状态', () => {
@@ -1072,7 +845,9 @@
         test('工作台包含七阶段导航、viewport 和保存反馈状态区域', () => {
           assert(app, 'QueueRecorderApp 不存在');
           const stageButtons = [...appDocument.querySelectorAll('.stage-button[data-stage]')];
-          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'parking', 'script', 'simulation'], '七个导航按钮错误');
+          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'simulation'], '五个导航按钮错误');
+          assert(!appDocument.querySelector('.stage-button[data-stage="parking"]'), '不应再显示车位记录入口');
+          assert(!appDocument.querySelector('.stage-button[data-stage="script"]'), '不应再显示剧本还原入口');
           equal(app.getState().activeStage, 'conveyor', '初始活动阶段应为 conveyor');
           assert(appDocument.querySelector('.stage-button[data-stage="conveyor"]').classList.contains('is-active'), 'conveyor 导航未高亮');
           assert(appDocument.querySelector('meta[name="viewport"][content="width=device-width, initial-scale=1"]'), 'viewport meta 缺失');
@@ -1221,96 +996,6 @@
           appWindow.confirm = originalConfirm;
         });
 
-        test('车位记录页面支持选择车辆、修正座位和记录日志', () => {
-          appDocument.querySelector('.stage-button[data-stage="parking"]').click();
-          equal(app.getState().activeStage, 'parking', '未进入车位记录页面');
-          assert(!appDocument.querySelector('#parkingColor'), '车位记录不应再使用颜色下拉框');
-          appDocument.querySelector('[data-action="add-vehicle"][data-color-value="1"][data-capacity="4"]').click();
-          appDocument.querySelector('[data-action="add-vehicle"][data-color-value="3"][data-capacity="6"]').click();
-          equal(app.getState().parking.slots[0].remaining, 4, '车辆未进入 1 号位');
-          equal(app.getState().parking.slots[1].remaining, 6, 'second vehicle should enter slot 2');
-          const occupiedSlot = appDocument.querySelector('.parking-slot[data-slot-index="0"]');
-          assert(occupiedSlot.style.getPropertyValue('--slot-color'), '车位未显示车辆颜色');
-          assert(occupiedSlot.classList.contains('is-occupied'), '占用车位缺少 occupied 状态');
-          const remainingInput = appDocument.querySelector('.remaining-input[data-slot-index="0"]');
-          remainingInput.value = '2';
-          remainingInput.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
-          equal(app.getState().parking.slots[0].remaining, 2, '剩余座位未通过页面更新');
-          appDocument.querySelector('#parkingNote').value = '页面记录';
-          appDocument.querySelector('[data-action="record-parking-step"]').click();
-          equal(app.getState().parking.logs[0].selectedVehicle, '\u7ea2\u82724,\u84dd\u82726', 'page batch selected vehicle order mismatch');
-          equal(app.getState().parking.logs[0].enteredSlot, '\u7ea2\u82724->1,\u84dd\u82726->2', 'page batch entry order mismatch');
-          equal(app.getState().parking.logs[0].slots[0], '红色4剩2', '页面日志车位状态错误');
-          assert(appDocument.querySelector('.parking-log-table').textContent.includes('页面记录'), '页面日志未渲染备注');
-          appDocument.querySelector('#parkingLevelNumber').value = '3';
-          appDocument.querySelector('#parkingAttemptNumber').value = '2';
-          appDocument.querySelector('[data-action="save-parking-game"]').click();
-          equal(app.getState().parking.savedGames[0].name, '第3关第2局', '页面未保存关卡局次名称');
-          assert(appDocument.querySelector('.saved-game-list').textContent.includes('第3关第2局'), '已保存单局列表未渲染');
-        });
-
-        test('剧本还原页面支持导入车辆表和生成报告', () => {
-          appDocument.querySelector('.stage-button[data-stage="script"]').click();
-          equal(app.getState().activeStage, 'script', '未进入剧本还原页面');
-          const levelInput = appDocument.querySelector('#scriptLevelName');
-          assert(levelInput && levelInput.closest('label').textContent.includes('关卡 id'), '关卡输入应明确标为关卡 id');
-          assert(levelInput.placeholder.includes('12'), '关卡 id 输入框缺少示例占位');
-          const leftStackTitles = [...appDocument.querySelectorAll('.script-left-stack h2')].map(title => title.textContent);
-          equal(leftStackTitles.slice(0, 2), ['当前车位状态', '停车场截图与热区'], '剧本还原左侧布局应先车位后截图');
-          assert(appDocument.querySelector('.script-right-stack #scriptBatchTitle'), '操作批次记录应在右侧栏');
-          assert(appDocument.querySelector('[data-action="save-script-level"]').textContent.includes('MD'), '保存剧本按钮应说明会生成 MD');
-          const tableInput = appDocument.querySelector('#scriptVehicleTable');
-          assert(tableInput, '车辆表输入框缺失');
-          const csvFileInput = appDocument.querySelector('#scriptVehicleCsvFile');
-          assert(csvFileInput && csvFileInput.accept.includes('.csv'), '车辆表 CSV 文件导入控件缺失');
-          tableInput.value = '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id\n1\t1\t4\t1\t\t';
-          appDocument.querySelector('[data-action="import-script-vehicles"]').click();
-          equal(app.getState().script.vehicles[0].id, 1, '页面未导入车辆表');
-          appDocument.querySelector('#scriptVehicleTable').value = '车辆id,车颜色,车座位,深度,前方车辆id,后方车辆id\n1,3,6,1,,"2"';
-          appDocument.querySelector('[data-action="import-script-vehicles"]').click();
-          equal(app.getState().script.vehicles[0], { id: 1, colorValue: 6, capacity: 6, depth: 1, frontVehicleIds: [], backVehicleIds: [2] }, '页面未解析 CSV 车辆表');
-          assert(appDocument.querySelector('.script-report').textContent.includes('批次时间线'), '页面未渲染剧本报告');
-
-          let hotspotState = core.setScriptScreenshot(
-            app.getState(),
-            'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
-          );
-          hotspotState = core.addScriptHotspot(hotspotState, {
-            vehicleId: 0,
-            xPercent: 30,
-            yPercent: 40,
-            widthPercent: 12,
-            heightPercent: 12,
-            source: 'ocr'
-          });
-          hotspotState = core.addScriptHotspot(hotspotState, {
-            vehicleId: 1,
-            xPercent: 60,
-            yPercent: 40,
-            widthPercent: 12,
-            heightPercent: 12,
-            source: 'manual',
-            status: 'saved'
-          });
-          app.updateState(hotspotState);
-          const blankMarker = appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]');
-          const vehicleMarker = appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]');
-          assert(blankMarker && blankMarker.textContent.includes('H1') && blankMarker.textContent.includes('ID'), '未填 id 热区缺少可对照编号');
-          assert(vehicleMarker && vehicleMarker.textContent.includes('H2') && vehicleMarker.textContent.includes('#1'), '已填 id 热区缺少车辆编号');
-          blankMarker.click();
-          equal(app.getState().script.activeHotspotId, 1, '点击未填 id 热区未定位到对应列表');
-          equal(app.getState().script.pending.selectedVehicleIds, [], '点击未填 id 热区不应记录车辆');
-          assert(appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"]').classList.contains('is-active'), '对应热区列表未高亮');
-          assert(appDocument.activeElement === appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] .script-hotspot-field[data-hotspot-field="vehicleId"]'), '可编辑热区第一次点击后应聚焦车辆 id 输入框');
-          assert(appDocument.querySelector('.script-active-hotspot-note').textContent.includes('当前编辑热区 H1'), '热区定位提示不应写成选车');
-          appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]').click();
-          equal(app.getState().script.activeHotspotId, 2, '点击已填 id 热区未定位到对应列表');
-          equal(app.getState().script.pending.selectedVehicleIds, [1], '点击已填 id 热区未记录车辆');
-          assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]').textContent.includes('✓'), '保存状态热区记录选车后未打勾');
-          app.updateState(core.saveScriptLevel(app.getState(), '第12关'));
-          assert(appDocument.querySelector('[data-action="download-script-level-md"][data-level-id]'), '已保存剧本缺少 MD 下载按钮');
-        });
-
         test('立即结算模拟页面支持文本输入、运行和清空', () => {
           appDocument.querySelector('.stage-button[data-stage="simulation"]').click();
           equal(app.getState().activeStage, 'simulation', '未进入立即结算模拟页面');
@@ -1391,107 +1076,6 @@
           appWindow.confirm = originalConfirm;
           equal(app.getState().simulation.clickSequenceText, '', '清空点击记录按钮未清空序列');
           equal(app.getState().simulation.conveyorCapacity, '4', '清空点击记录不应清空基础输入');
-        });
-
-        test('热区手动改 id 后可保存，并通过列表或截图选车', () => {
-          appDocument.querySelector('.stage-button[data-stage="script"]').click();
-          let hotspotState = core.importScriptVehicleTable(app.getState(), '1\t1\t4\t1\t\t');
-          hotspotState = core.setScriptScreenshot(
-            hotspotState,
-            'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
-          );
-          hotspotState = core.addScriptHotspot(hotspotState, {
-            vehicleId: 0,
-            xPercent: 35,
-            yPercent: 45,
-            widthPercent: 12,
-            heightPercent: 12,
-            source: 'ocr'
-          });
-          app.updateState(hotspotState);
-          const idInput = appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] .script-hotspot-field[data-hotspot-field="vehicleId"]');
-          idInput.value = '1';
-          const saveButton = appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] [data-action="save-script-hotspot"]');
-          assert(saveButton, '热区列表缺少保存按钮');
-          saveButton.click();
-          equal(app.getState().script.hotspots[0].vehicleId, 1, '保存按钮未写入修正后的车辆 id');
-          equal(app.getState().script.hotspots[0].status, 'saved', '保存按钮未把热区切到保存状态');
-          assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('#1'), '保存后截图热区未显示车辆 id');
-
-          appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] [data-action="select-script-vehicle"]').click();
-          assert(appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] [data-action="select-script-vehicle"]').textContent.includes('记录选车'), '操作批次按钮应明确写为记录选车');
-          equal(app.getState().script.pending.selectedVehicleIds, [1], '保存后列表选车按钮未记录车辆');
-          app.updateState({
-            ...app.getState(),
-            script: {
-              ...app.getState().script,
-              slots: [null, null, null, null],
-              pending: { selectedVehicleIds: [], enteredSlots: [], departedVehicleIds: [] }
-            }
-          });
-          appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').click();
-          equal(app.getState().script.pending.selectedVehicleIds, [1], '保存后点击截图热区未记录车辆');
-          assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('✓'), '保存后点击截图热区未显示已选对勾');
-          appDocument.querySelector('[data-action="depart-script-slot"][data-slot-index="0"]').click();
-          assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('✓'), '本批已选车辆开走后，对应热区仍应显示已选对勾');
-          appDocument.querySelector('[data-action="record-script-batch"]').click();
-          assert(!appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('✓'), '记录本批次后，应清除截图热区已选对勾');
-
-          const resetHotspotState = core.updateScriptHotspot(app.getState(), 1, { vehicleId: 0 });
-          app.updateState({
-            ...resetHotspotState,
-            script: {
-              ...resetHotspotState.script,
-              slots: [null, null, null, null],
-              pending: { selectedVehicleIds: [], enteredSlots: [], departedVehicleIds: [] }
-            }
-          });
-          appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] [data-action="edit-script-hotspot"]').click();
-          equal(app.getState().script.hotspots[0].status, 'editing', '编辑按钮未把热区切到可编辑状态');
-          const directSelectInput = appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] .script-hotspot-field[data-hotspot-field="vehicleId"]');
-          directSelectInput.value = '1';
-          appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').click();
-          equal(app.getState().script.pending.selectedVehicleIds, [], '可编辑状态点击截图热区不应记录车辆');
-          appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] [data-action="save-script-hotspot"]').click();
-          appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').click();
-          equal(app.getState().script.pending.selectedVehicleIds, [1], '重新保存后点击截图热区未记录车辆');
-        });
-
-        test('热区列表支持一键保存所有已编辑字段', () => {
-          let hotspotState = core.importScriptVehicleTable(
-            { ...core.createInitialState(), activeStage: 'script' },
-            '1\t1\t4\t1\t\t\n2\t2\t4\t1\t\t'
-          );
-          hotspotState = core.setScriptScreenshot(
-            hotspotState,
-            'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
-          );
-          hotspotState = core.addScriptHotspot(hotspotState, {
-            vehicleId: 0,
-            xPercent: 30,
-            yPercent: 40,
-            widthPercent: 12,
-            heightPercent: 12,
-            source: 'ocr'
-          });
-          hotspotState = core.addScriptHotspot(hotspotState, {
-            vehicleId: 0,
-            xPercent: 60,
-            yPercent: 40,
-            widthPercent: 12,
-            heightPercent: 12,
-            source: 'ocr'
-          });
-          app.updateState(hotspotState);
-          appDocument.querySelector('.script-list-card[data-script-hotspot-card="1"] .script-hotspot-field[data-hotspot-field="vehicleId"]').value = '1';
-          appDocument.querySelector('.script-list-card[data-script-hotspot-card="2"] .script-hotspot-field[data-hotspot-field="vehicleId"]').value = '2';
-          const saveAllButton = appDocument.querySelector('[data-action="save-all-script-hotspots"]');
-          assert(saveAllButton, '缺少一键保存热区按钮');
-          saveAllButton.click();
-          equal(app.getState().script.hotspots.map(hotspot => hotspot.vehicleId), [1, 2], '一键保存未写入所有热区 id');
-          equal(app.getState().script.hotspots.map(hotspot => hotspot.status), ['saved', 'saved'], '一键保存未把所有热区切到保存状态');
-          assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="1"]').textContent.includes('#1'), '一键保存后 H1 未同步到截图');
-          assert(appDocument.querySelector('.script-hotspot-marker[data-hotspot-id="2"]').textContent.includes('#2'), '一键保存后 H2 未同步到截图');
         });
 
         const restoreRightState = {
