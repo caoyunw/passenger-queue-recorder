@@ -1349,7 +1349,7 @@
     const SIMULATION_KEYS = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText', 'result', 'errors'];
     const VEHICLE_CAPACITIES = [4, 6, 10];
     const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/;
-    const VEHICLE_CSV_COLOR_TO_QUEUE_COLOR = [2, 3, 4, 5, 0, 1, 8, 6, 7, 10, 9];
+    const VEHICLE_CSV_COLOR_TO_QUEUE_COLOR = [3, 4, 5, 6, 1, 2, 9, 7, 8, 11, 10];
     const DEFAULT_COLORS = [
       { name: '红色', value: 1, hex: '#e54c4c' },
       { name: '黄色', value: 2, hex: '#f3bd3d' },
@@ -1883,15 +1883,11 @@
     }
 
     function isScriptColorValue(state, value) {
-      return Boolean(state
-        && Array.isArray(state.colors)
-        && Number.isSafeInteger(value)
-        && value >= 0
-        && value < state.colors.length);
+      return isMappedValue(state, value);
     }
 
     function getScriptColorName(state, value) {
-      if (isScriptColorValue(state, value)) return state.colors[value].name;
+      if (isScriptColorValue(state, value)) return getColorName(state, value);
       return `颜色${value}`;
     }
 
@@ -3140,8 +3136,7 @@
         && Number.isSafeInteger(vehicle.id)
         && vehicle.id > 0
         && Number.isSafeInteger(vehicle.colorValue)
-        && vehicle.colorValue >= 0
-        && vehicle.colorValue < mappedValues.size
+        && mappedValues.has(vehicle.colorValue)
         && VEHICLE_CAPACITIES.includes(vehicle.capacity)
         && Number.isSafeInteger(vehicle.depth)
         && vehicle.depth >= 0
@@ -3179,8 +3174,7 @@
         && Number.isSafeInteger(slot.vehicleId)
         && slot.vehicleId > 0
         && Number.isSafeInteger(slot.colorValue)
-        && slot.colorValue >= 0
-        && slot.colorValue < mappedValues.size
+        && mappedValues.has(slot.colorValue)
         && VEHICLE_CAPACITIES.includes(slot.capacity)
         && Number.isInteger(slot.remaining)
         && slot.remaining >= 0
