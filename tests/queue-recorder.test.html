@@ -667,6 +667,42 @@
           equal(state.simulation, core.createInitialState().simulation, '清空模拟器状态失败');
         });
 
+        test('立即结算模拟器点击车辆函数会追加序列并自动运行', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            conveyorCapacity: '4',
+            passengerQueueText: '0,0,0,0,2,2',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0\n2\t2\t6\t0',
+            clickSequenceText: ''
+          });
+          state = core.appendStableSimulationClick(state, 1);
+          equal(state.simulation.clickSequenceText, '1', '点击车辆未追加序列');
+          assert(state.simulation.result && state.simulation.result.steps.length === 1, '点击车辆后未自动运行模拟');
+          assert(core.getStableSimulationReportText(state).includes('#1红色4'), '自动运行报告缺少车辆');
+        });
+
+        test('立即结算模拟器支持撤销、删除步骤和清空点击记录', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            conveyorCapacity: '4',
+            passengerQueueText: '0,0,0,0,2,2',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t0\t4\t0\n2\t2\t6\t0',
+            clickSequenceText: ''
+          });
+          state = core.appendStableSimulationClick(state, 1);
+          state = core.appendStableSimulationClick(state, 2);
+          equal(state.simulation.clickSequenceText, '1,2', '连续点击序列错误');
+          state = core.undoStableSimulationClick(state);
+          equal(state.simulation.clickSequenceText, '1', '撤销上一步未删除最后车辆');
+          state = core.appendStableSimulationClick(state, 2);
+          state = core.deleteStableSimulationClickAt(state, 0);
+          equal(state.simulation.clickSequenceText, '2', '删除第 1 步后序列错误');
+          state = core.clearStableSimulationClicks(state);
+          equal(state.simulation.clickSequenceText, '', '清空点击记录未清空序列');
+          equal(state.simulation.result, null, '清空点击记录应清空结果');
+          equal(state.simulation.conveyorCapacity, '4', '清空点击记录不应清空基础输入');
+        });
+
         test('立即结算模拟器输入变化后清空旧结果和旧错误', () => {
           let state = core.createInitialState();
           state = core.setStableSimulationInput(state, {
