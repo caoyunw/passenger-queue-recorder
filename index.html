@@ -983,7 +983,7 @@
     const STATE_KEYS = ['colors', 'queues', 'histories', 'simulation', 'queueFit', 'activeStage'];
     const COLOR_KEYS = ['name', 'value', 'hex'];
     const SIMULATION_KEYS = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText', 'screenshotDataUrl', 'hotspots', 'nextHotspotId', 'result', 'errors'];
-    const QUEUE_FIT_KEYS = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'targetRecordFilename', 'targetRecordText', 'fittedPassengerQueueText', 'fittedClickSequenceText', 'score', 'roleSummary', 'errors'];
+    const QUEUE_FIT_KEYS = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'targetRecordFilename', 'targetRecordText', 'targetVehicleTableText', 'targetClickSequenceText', 'targetPathSummary', 'targetLayerSummary', 'fittedPassengerQueueText', 'fittedClickSequenceText', 'score', 'roleSummary', 'errors'];
     const SIMULATION_HOTSPOT_KEYS = ['id', 'vehicleId', 'xPercent', 'yPercent'];
     const VEHICLE_CAPACITIES = [4, 6, 10];
     const STABLE_SIMULATION_ROLE_ORDER = ['等待占位车', '补清触发车', '连锁释放车', '即时清空车', '尾段收尾车'];
@@ -1031,6 +1031,10 @@
         vehicleTableText: '',
         targetRecordFilename: '',
         targetRecordText: '',
+        targetVehicleTableText: '',
+        targetClickSequenceText: '',
+        targetPathSummary: [],
+        targetLayerSummary: [],
         fittedPassengerQueueText: '',
         fittedClickSequenceText: '',
         score: 0,
@@ -1546,13 +1550,100 @@
       };
     }
 
-    function scoreStableSimulationFitResult(result, targetRoleSummary = []) {
+    function createQueueFitTargetPathSummary(vehicles) {
+      const grouped = new Map();
+      vehicles.forEach(vehicle => {
+        const role = getStableSimulationPathRole(vehicle);
+        const group = grouped.get(role) || [];
+        group.push(vehicle.id);
+        grouped.set(role, group);
+      });
+
+      const extraRoles = [...grouped.keys()].filter(role => !STABLE_SIMULATION_PATH_ROLE_ORDER.includes(role));
+      return [...STABLE_SIMULATION_PATH_ROLE_ORDER, ...extraRoles]
+        .filter(role => grouped.has(role))
+        .map(role => ({ role, vehicleIds: grouped.get(role) }));
+    }
+
+    function createQueueFitTargetLayerSummary(vehicles) {
+      const grouped = new Map();
+      vehicles.forEach(vehicle => {
+        const layerLabel = getStableSimulationLayerLabel(vehicle.depth);
+        const group = grouped.get(layerLabel) || {
+          layerLabel,
+          depth: vehicle.depth,
+          vehicleIds: []
+        };
+        group.vehicleIds.push(vehicle.id);
+        grouped.set(layerLabel, group);
+      });
+
+      return [...grouped.values()].sort((a, b) => a.depth - b.depth || a.layerLabel.localeCompare(b.layerLabel));
+    }
+
+    function getQueueFitTargetVehicleTableAnalysis(state, input) {
+      const targetVehicleTableText = input && typeof input.targetVehicleTableText === 'string'
+        ? input.targetVehicleTableText.trim()
+        : '';
+      if (!targetVehicleTableText) {
+        return { clickSequenceText: '', pathSummary: [], layerSummary: [], errors: [] };
+      }
+
+      const parsed = parseScriptVehicleTable(targetVehicleTableText);
+      const validVehicles = parsed.vehicles.filter(vehicle => isScriptColorValue(state, vehicle.colorValue));
+      const errors = [...parsed.errors];
+      parsed.vehicles
+        .filter(vehicle => !isScriptColorValue(state, vehicle.colorValue))
+        .forEach(vehicle => errors.push(`竞品车辆 ${vehicle.id} 的颜色映射 ${vehicle.colorValue} 不存在`));
+      if (errors.length > 0) return { clickSequenceText: '', pathSummary: [], layerSummary: [], errors };
+
+      const order = getStableSimulationDependencyOrder(validVehicles);
+      return {
+        clickSequenceText: order.errors.length > 0 ? '' : order.values.join(','),
+        pathSummary: createQueueFitTargetPathSummary(validVehicles),
+        layerSummary: createQueueFitTargetLayerSummary(validVehicles),
+        errors: order.errors.map(error => `竞品车辆表路径解析失败：${error}`)
+      };
+    }
+
+    function scoreStableSimulationGroupDistance(resultGroups, targetGroups, groupKey = 'role') {
+      if (!Array.isArray(targetGroups) || targetGroups.length === 0) return 0;
+      const resultCounts = new Map();
+      const targetCounts = new Map();
+      (Array.isArray(resultGroups) ? resultGroups : []).forEach(group => {
+        if (group && typeof group[groupKey] === 'string' && Array.isArray(group.vehicleIds)) {
+          resultCounts.set(group[groupKey], group.vehicleIds.length);
+        }
+      });
+      targetGroups.forEach(group => {
+        if (group && typeof group[groupKey] === 'string' && Array.isArray(group.vehicleIds)) {
+          targetCounts.set(group[groupKey], group.vehicleIds.length);
+        }
+      });
+
+      const keys = new Set([...targetCounts.keys(), ...resultCounts.keys()]);
+      let distance = 0;
+      keys.forEach(key => {
+        distance += Math.abs((targetCounts.get(key) || 0) - (resultCounts.get(key) || 0));
+      });
+      return distance;
+    }
+
+    function scoreStableSimulationFitResult(result, targetRoleSummary = [], targetPathSummary = [], targetLayerSummary = []) {
       const waiting = getStableSimulationRoleCount(result, '等待占位车');
       const trigger = getStableSimulationRoleCount(result, '补清触发车');
       const chain = getStableSimulationRoleCount(result, '连锁释放车');
       const rhythmScore = waiting * 4 + trigger * 5 + chain * 8;
-      if (!Array.isArray(targetRoleSummary) || targetRoleSummary.length === 0) return rhythmScore;
-      return 10000 - scoreStableSimulationRoleDistance(result.roleSummary, targetRoleSummary) * 100 + rhythmScore;
+      if (Array.isArray(targetRoleSummary) && targetRoleSummary.length > 0) {
+        return 10000 - scoreStableSimulationRoleDistance(result.roleSummary, targetRoleSummary) * 100 + rhythmScore;
+      }
+      const pathTargetScore = Array.isArray(targetPathSummary) && targetPathSummary.length > 0
+        ? 5000 - scoreStableSimulationGroupDistance(result.pathSummary, targetPathSummary, 'role') * 80
+        : 0;
+      const layerTargetScore = Array.isArray(targetLayerSummary) && targetLayerSummary.length > 0
+        ? 1000 - scoreStableSimulationGroupDistance(result.layerSummary, targetLayerSummary, 'layerLabel') * 30
+        : 0;
+      return pathTargetScore + layerTargetScore + rhythmScore;
     }
 
     function getStableSimulationCandidateSplitIndexes(order, vehiclesById) {
@@ -1622,8 +1713,9 @@
       parsedVehicles.vehicles
         .filter(vehicle => !isScriptColorValue(state, vehicle.colorValue))
         .forEach(vehicle => errors.push(`车辆 ${vehicle.id} 的颜色映射 ${vehicle.colorValue} 不存在`));
-      const target = getQueueFitTargetRoleSummary(state, input);
-      errors.push(...target.errors);
+      const targetRecord = getQueueFitTargetRoleSummary(state, input);
+      const targetVehicleTable = getQueueFitTargetVehicleTableAnalysis(state, input);
+      errors.push(...targetRecord.errors, ...targetVehicleTable.errors);
       if (errors.length > 0) {
         return { passengerQueueText: '', clickSequenceText: '', score: 0, roleSummary: [], errors };
       }
@@ -1662,7 +1754,14 @@
         }),
         score: -Infinity
       };
-      if (isStableSimulationFitResultValid(best.result)) best.score = scoreStableSimulationFitResult(best.result, target.roleSummary);
+      if (isStableSimulationFitResultValid(best.result)) {
+        best.score = scoreStableSimulationFitResult(
+          best.result,
+          targetRecord.roleSummary,
+          targetVehicleTable.pathSummary,
+          targetVehicleTable.layerSummary
+        );
+      }
 
       const { waitingIndexes, triggerIndexes } = getStableSimulationCandidateSplitIndexes(order.values, vehiclesById);
       const random = createStableSimulationFitRandom(110011);
@@ -1677,7 +1776,12 @@
           clickSequenceText
         });
         if (!isStableSimulationFitResultValid(result)) continue;
-        const score = scoreStableSimulationFitResult(result, target.roleSummary);
+        const score = scoreStableSimulationFitResult(
+          result,
+          targetRecord.roleSummary,
+          targetVehicleTable.pathSummary,
+          targetVehicleTable.layerSummary
+        );
         if (score > best.score) best = { queue, result, score };
       }
 
@@ -1696,6 +1800,9 @@
         clickSequenceText,
         score: best.score,
         roleSummary: best.result.roleSummary,
+        targetClickSequenceText: targetVehicleTable.clickSequenceText,
+        targetPathSummary: targetVehicleTable.pathSummary,
+        targetLayerSummary: targetVehicleTable.layerSummary,
         errors: []
       };
     }
@@ -2543,14 +2650,16 @@
         passengerQueueText: typeof input.passengerQueueText === 'string' ? input.passengerQueueText.trim() : state.queueFit.passengerQueueText,
         vehicleTableText: typeof input.vehicleTableText === 'string' ? input.vehicleTableText.trim() : state.queueFit.vehicleTableText,
         targetRecordFilename: typeof input.targetRecordFilename === 'string' ? input.targetRecordFilename.trim() : state.queueFit.targetRecordFilename,
-        targetRecordText: typeof input.targetRecordText === 'string' ? input.targetRecordText.trim() : state.queueFit.targetRecordText
+        targetRecordText: typeof input.targetRecordText === 'string' ? input.targetRecordText.trim() : state.queueFit.targetRecordText,
+        targetVehicleTableText: typeof input.targetVehicleTableText === 'string' ? input.targetVehicleTableText.trim() : state.queueFit.targetVehicleTableText
       };
       const inputChanged = nextFields.levelName !== state.queueFit.levelName
         || nextFields.conveyorCapacity !== state.queueFit.conveyorCapacity
         || nextFields.passengerQueueText !== state.queueFit.passengerQueueText
         || nextFields.vehicleTableText !== state.queueFit.vehicleTableText
         || nextFields.targetRecordFilename !== state.queueFit.targetRecordFilename
-        || nextFields.targetRecordText !== state.queueFit.targetRecordText;
+        || nextFields.targetRecordText !== state.queueFit.targetRecordText
+        || nextFields.targetVehicleTableText !== state.queueFit.targetVehicleTableText;
       return {
         ...state,
         queueFit: {
@@ -2560,6 +2669,9 @@
           fittedClickSequenceText: inputChanged ? '' : state.queueFit.fittedClickSequenceText,
           score: inputChanged ? 0 : state.queueFit.score,
           roleSummary: inputChanged ? [] : state.queueFit.roleSummary,
+          targetClickSequenceText: inputChanged ? '' : state.queueFit.targetClickSequenceText,
+          targetPathSummary: inputChanged ? [] : state.queueFit.targetPathSummary,
+          targetLayerSummary: inputChanged ? [] : state.queueFit.targetLayerSummary,
           errors: inputChanged ? [] : state.queueFit.errors
         }
       };
@@ -2576,6 +2688,9 @@
           fittedClickSequenceText: fitted.errors.length > 0 ? '' : fitted.clickSequenceText,
           score: fitted.errors.length > 0 ? 0 : fitted.score,
           roleSummary: fitted.errors.length > 0 ? [] : fitted.roleSummary,
+          targetClickSequenceText: fitted.errors.length > 0 ? '' : fitted.targetClickSequenceText,
+          targetPathSummary: fitted.errors.length > 0 ? [] : fitted.targetPathSummary,
+          targetLayerSummary: fitted.errors.length > 0 ? [] : fitted.targetLayerSummary,
           errors: fitted.errors
         }
       };
@@ -2884,6 +2999,21 @@
         && typeof queueFit.vehicleTableText === 'string'
         && typeof queueFit.targetRecordFilename === 'string'
         && typeof queueFit.targetRecordText === 'string'
+        && typeof queueFit.targetVehicleTableText === 'string'
+        && typeof queueFit.targetClickSequenceText === 'string'
+        && isDenseArray(queueFit.targetPathSummary)
+        && queueFit.targetPathSummary.every(group => group
+          && typeof group === 'object'
+          && typeof group.role === 'string'
+          && isDenseArray(group.vehicleIds)
+          && group.vehicleIds.every(vehicleId => Number.isSafeInteger(vehicleId) && vehicleId >= 0))
+        && isDenseArray(queueFit.targetLayerSummary)
+        && queueFit.targetLayerSummary.every(group => group
+          && typeof group === 'object'
+          && typeof group.layerLabel === 'string'
+          && (group.depth === null || Number.isSafeInteger(group.depth))
+          && isDenseArray(group.vehicleIds)
+          && group.vehicleIds.every(vehicleId => Number.isSafeInteger(vehicleId) && vehicleId >= 0))
         && typeof queueFit.fittedPassengerQueueText === 'string'
         && typeof queueFit.fittedClickSequenceText === 'string'
         && Number.isFinite(queueFit.score)
@@ -2937,6 +3067,8 @@
       if (!queueFit || typeof queueFit !== 'object') return createEmptyQueueFit();
       const normalized = { ...createEmptyQueueFit(), ...queueFit };
       normalized.roleSummary = Array.isArray(queueFit.roleSummary) ? queueFit.roleSummary : [];
+      normalized.targetPathSummary = Array.isArray(queueFit.targetPathSummary) ? queueFit.targetPathSummary : [];
+      normalized.targetLayerSummary = Array.isArray(queueFit.targetLayerSummary) ? queueFit.targetLayerSummary : [];
       normalized.errors = Array.isArray(queueFit.errors) ? queueFit.errors : [];
       normalized.score = Number.isFinite(queueFit.score) ? queueFit.score : 0;
       return normalized;
@@ -3719,6 +3851,18 @@
         : '无';
     }
 
+    function formatQueueFitPathSummary(pathSummary) {
+      return Array.isArray(pathSummary) && pathSummary.length > 0
+        ? pathSummary.map(group => `${group.role}:${group.vehicleIds.length}辆`).join('；')
+        : '无';
+    }
+
+    function formatQueueFitLayerSummary(layerSummary) {
+      return Array.isArray(layerSummary) && layerSummary.length > 0
+        ? layerSummary.map(group => `${group.layerLabel}:${group.vehicleIds.length}辆`).join('；')
+        : '无';
+    }
+
     function renderQueueFitOutput(container) {
       if (!container) return;
       container.innerHTML = `
@@ -3729,19 +3873,24 @@
         <label class="script-field">拟合点击顺序
           <textarea class="script-textarea queue-fit-output-clicks" readonly></textarea>
         </label>
+        <label class="script-field">竞品表推导点击顺序
+          <textarea class="script-textarea queue-fit-output-target-clicks" readonly></textarea>
+        </label>
       `;
       const status = container.querySelector('.queue-fit-status');
       const passengerOutput = container.querySelector('.queue-fit-output-passenger');
       const clickOutput = container.querySelector('.queue-fit-output-clicks');
+      const targetClickOutput = container.querySelector('.queue-fit-output-target-clicks');
       if (state.queueFit.errors.length > 0) {
         status.textContent = `错误：${state.queueFit.errors.join('；')}`;
       } else if (state.queueFit.fittedPassengerQueueText) {
-        status.textContent = `拟合分数：${state.queueFit.score}；角色节奏：${formatQueueFitRoleSummary(state.queueFit.roleSummary)}`;
+        status.textContent = `拟合分数：${state.queueFit.score}；角色节奏：${formatQueueFitRoleSummary(state.queueFit.roleSummary)}；竞品路径目标：${formatQueueFitPathSummary(state.queueFit.targetPathSummary)}；竞品分层目标：${formatQueueFitLayerSummary(state.queueFit.targetLayerSummary)}`;
       } else {
         status.textContent = '尚未运行拟合。';
       }
       passengerOutput.value = state.queueFit.fittedPassengerQueueText;
       clickOutput.value = state.queueFit.fittedClickSequenceText;
+      targetClickOutput.value = state.queueFit.targetClickSequenceText;
     }
 
     function renderQueueFitStage() {
@@ -3786,6 +3935,12 @@
                 <label class="script-field">竞品结算模拟记录
                   <textarea class="script-textarea queue-fit-input" placeholder="导入或粘贴竞品立即结算模拟 MD，用于贴近竞品角色节奏" data-queue-fit-field="targetRecordText"></textarea>
                 </label>
+                <label class="script-field">导入竞品车辆数据表 CSV
+                  <input id="queueFitTargetVehicleCsvFile" class="script-input" type="file" accept=".csv,text/csv">
+                </label>
+                <label class="script-field">竞品车辆数据表
+                  <textarea class="script-textarea queue-fit-input" placeholder="无录屏时导入竞品车辆表，用前后方车辆和深度推导路径体验目标" data-queue-fit-field="targetVehicleTableText"></textarea>
+                </label>
                 <div class="action-row">
                   <button class="action-button primary" type="button" data-action="run-queue-fit">运行拟合</button>
                   <button class="action-button secondary" type="button" data-action="copy-queue-fit-passenger">复制队列</button>
@@ -3811,6 +3966,7 @@
       workspace.querySelector('.queue-fit-input[data-queue-fit-field="passengerQueueText"]').value = state.queueFit.passengerQueueText;
       workspace.querySelector('.queue-fit-input[data-queue-fit-field="vehicleTableText"]').value = state.queueFit.vehicleTableText;
       workspace.querySelector('.queue-fit-input[data-queue-fit-field="targetRecordText"]').value = state.queueFit.targetRecordText;
+      workspace.querySelector('.queue-fit-input[data-queue-fit-field="targetVehicleTableText"]').value = state.queueFit.targetVehicleTableText;
       renderQueueFitOutput(workspace.querySelector('.queue-fit-output'));
     }
 
@@ -3938,7 +4094,8 @@
         passengerQueueText: readField('passengerQueueText'),
         vehicleTableText: readField('vehicleTableText'),
         targetRecordFilename: state.queueFit.targetRecordFilename,
-        targetRecordText: readField('targetRecordText')
+        targetRecordText: readField('targetRecordText'),
+        targetVehicleTableText: readField('targetVehicleTableText')
       };
     }
 
@@ -4112,6 +4269,20 @@
           const textarea = workspace.querySelector('.queue-fit-input[data-queue-fit-field="targetRecordText"]');
           if (textarea instanceof HTMLTextAreaElement) {
             textarea.value = error && error.message ? error.message : 'MD 读取失败';
+          }
+        });
+      } else if (target instanceof HTMLInputElement && target.matches('#queueFitTargetVehicleCsvFile') && target.files && target.files[0]) {
+        void readFileAsText(target.files[0]).then(text => {
+          const textarea = workspace.querySelector('.queue-fit-input[data-queue-fit-field="targetVehicleTableText"]');
+          if (textarea instanceof HTMLTextAreaElement) textarea.value = text;
+          updateState(setQueueFitInput(state, {
+            ...getQueueFitInputFromDom(),
+            targetVehicleTableText: text
+          }));
+        }).catch(error => {
+          const textarea = workspace.querySelector('.queue-fit-input[data-queue-fit-field="targetVehicleTableText"]');
+          if (textarea instanceof HTMLTextAreaElement) {
+            textarea.value = error && error.message ? error.message : 'CSV 读取失败';
           }
         });
       } else if (target instanceof HTMLInputElement && target.matches('#simulationRecordVehicleCsvFile') && target.files && target.files.length > 0) {
