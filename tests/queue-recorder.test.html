@@ -506,6 +506,47 @@
           equal(parsed.vehicles.map(vehicle => vehicle.colorValue), [3, 1, 2, 11, 10], '车辆 CSV 颜色映射未转换为队列颜色映射');
         });
 
+        test('车辆 CSV 允许车机制文本列且不当作依赖车辆解析', () => {
+          const table = [
+            '车辆id,车辆色,车座位,深度,前方车辆id,后方车辆id,车机制',
+            '1,0,4,0,,,问号车',
+            '2,4,6,0,,1,带锁车'
+          ].join('\n');
+          const parsed = core.parseScriptVehicleTable(table);
+          equal(parsed.errors, [], '车机制文本列不应被解析为依赖车辆 id');
+          equal(parsed.vehicles, [
+            { id: 1, colorValue: 3, capacity: 4, depth: 0, frontVehicleIds: [], backVehicleIds: [] },
+            { id: 2, colorValue: 1, capacity: 6, depth: 0, frontVehicleIds: [], backVehicleIds: [1] }
+          ], '带车机制文本列的 CSV 解析结果错误');
+        });
+
+        test('车辆表、依赖车辆和点击顺序允许车辆 id 为 0', () => {
+          const state = core.createInitialState();
+          const parsedTable = core.parseScriptVehicleTable([
+            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+            '0\t1\t4\t0\t\t',
+            '1\t3\t6\t0\t0\t0'
+          ].join('\n'));
+          equal(parsedTable.errors, [], '车辆 id 0 和依赖 id 0 不应报错');
+          equal(parsedTable.vehicles, [
+            { id: 0, colorValue: 1, capacity: 4, depth: 0, frontVehicleIds: [], backVehicleIds: [] },
+            { id: 1, colorValue: 3, capacity: 6, depth: 0, frontVehicleIds: [0], backVehicleIds: [0] }
+          ], '车辆 id 0 解析结果错误');
+
+          const result = core.runStableSimulation(state, {
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n0\t1\t4\t0',
+            clickSequenceText: '0'
+          });
+          equal(result.errors, [], '点击车辆 id 0 不应报错');
+          equal(result.steps[0].clickedVehicleId, 0, '点击序列中的车辆 id 0 未保留');
+          equal(result.steps[0].departedVehicleIds, [0], '车辆 id 0 满员后应开走');
+
+          const hotspotState = core.addStableSimulationHotspot(state, { vehicleId: 0, xPercent: 25, yPercent: 40 });
+          equal(hotspotState.simulation.hotspots, [{ id: 1, vehicleId: 0, xPercent: 25, yPercent: 40 }], '截图标记应允许车辆 id 0');
+        });
+
         test('立即结算模拟器按容量切分传送带并解析点击序列', () => {
           const parsed = core.parseStableSimulationInput(core.createInitialState(), {
             conveyorCapacity: '4',
@@ -558,10 +599,167 @@
           assert(state.simulation.result.steps.length === 1, '运行后应保存模拟结果');
           const report = core.getStableSimulationReportText(state);
           assert(report.includes('# 第2关 立即结算模拟'), '报告标题错误');
-          assert(report.includes('步骤\t点击车辆\t进入车位\t上客统计'), '报告表头缺失');
+          assert(report.includes('步骤\t点击车辆\t分层车辆id\t结算角色\t路径角色\t进入车位\t上客统计'), '报告表头缺失');
           assert(report.includes('#1红色4'), '报告未包含车辆名称');
           state = core.clearStableSimulation(state);
           equal(state.simulation, core.createInitialState().simulation, '清空模拟器状态失败');
+        });
+
+        test('立即结算模拟器总览报告停车场剩余车辆和点击对表校验', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            levelName: '剩余车辆测试',
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1,3,3',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t1\t4\t0\n2\t3\t6\t0',
+            clickSequenceText: '1'
+          });
+          state = core.runStableSimulationState(state);
+          let report = core.getStableSimulationReportText(state);
+          assert(report.includes('停车场剩余车辆：#2蓝色6'), '总览应列出未点击的停车场剩余车辆');
+          assert(report.includes('车辆对表校验：仍有 1 辆表内车辆未点击'), '总览应提示仍有表内车辆未点击');
+
+          state = core.setStableSimulationInput(state, { clickSequenceText: '1,2' });
+          state = core.runStableSimulationState(state);
+          report = core.getStableSimulationReportText(state);
+          assert(report.includes('停车场剩余车辆：无'), '全部点击后停车场剩余车辆应为无');
+          assert(report.includes('车辆对表校验：点击车辆与车辆表全部对上'), '全部点击后应提示点击车辆与车辆表全部对上');
+        });
+
+        test('立即结算模拟器为车辆标注结算角色和路径角色并写入报告', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            levelName: '角色标注测试',
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,3,3,3,3,1',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t1\t4\t0\n2\t3\t4\t0',
+            clickSequenceText: '1,2'
+          });
+          state = core.runStableSimulationState(state);
+          const result = state.simulation.result;
+          equal(result.steps.map(step => step.role), ['等待占位车', '补清触发车'], '步骤功能角色标注错误');
+          equal(result.steps[0].tags, ['残座等待', '被第2步补清'], '等待占位车标签错误');
+          equal(result.steps[1].tags, ['当步开走', '触发补清:#1'], '补清触发车标签错误');
+          equal(result.steps[1].triggeredVehicleIds, [1], '触发补清车辆记录错误');
+          equal(result.roleSummary, [
+            { role: '等待占位车', vehicleIds: [1] },
+            { role: '补清触发车', vehicleIds: [2] }
+          ], '功能角色汇总错误');
+
+          const report = core.getStableSimulationReportText(state);
+          assert(report.includes('步骤\t点击车辆\t分层车辆id\t结算角色\t路径角色\t进入车位'), '报告步骤表应增加分层车辆id、结算角色和路径角色列');
+          assert(report.includes('#1红色4\tL0:#1\t等待占位车'), '报告应标注等待占位车和分层车辆id');
+          assert(report.includes('#2蓝色4\tL0:#2\t补清触发车'), '报告应标注补清触发车和分层车辆id');
+          assert(report.includes('结算角色：等待占位车：#1红色4；补清触发车：#2蓝色4'), '总览应输出结算角色汇总');
+        });
+
+        test('立即结算模拟器根据车辆表标注路径依赖角色', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            levelName: '路径角色测试',
+            conveyorCapacity: '8',
+            passengerQueueText: '1,1,1,1,3,3,3,3',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t1\t4\t0\t\t2,3,4,5',
+              '2\t3\t4\t5\t1\t',
+              '3\t1\t4\t0\t\t',
+              '4\t1\t4\t0\t\t',
+              '5\t1\t4\t0\t\t'
+            ].join('\n'),
+            clickSequenceText: '1,2'
+          });
+          state = core.runStableSimulationState(state);
+          const result = state.simulation.result;
+          equal(result.steps.map(step => step.pathRole), ['入口分支解锁车', '深层终点车'], '路径依赖角色标注错误');
+          equal(result.steps.map(step => step.layeredVehicleId), ['L0:#1', 'L5:#2'], '分层车辆 id 标注错误');
+          equal(result.steps[0].backVehicleIds, [2, 3, 4, 5], '后方释放车辆记录错误');
+          equal(result.steps[1].frontVehicleIds, [1], '前方依赖车辆记录错误');
+
+          const report = core.getStableSimulationReportText(state);
+          assert(report.includes('#1红色4\tL0:#1\t尾段收尾车\t入口分支解锁车'), '报告应显示入口分支解锁车和分层车辆id');
+          assert(report.includes('#2蓝色4\tL5:#2\t尾段收尾车\t深层终点车'), '报告应显示深层终点车和分层车辆id');
+          assert(report.includes('路径角色：入口分支解锁车：#1红色4；深层终点车：#2蓝色4'), '总览应输出路径角色汇总');
+          assert(report.includes('分层车辆汇总：L0：#1红色4；L5：#2蓝色4'), '总览应输出分层车辆汇总');
+          assert(report.includes('关键路径车辆：#1红色4（后方4）'), '总览应输出关键路径车辆');
+          assert(report.includes('深层依赖车辆：#2蓝色4（深度5/前方1）'), '总览应输出深层依赖车辆');
+        });
+
+        test('立即结算模拟器分析布局自由度和可互换车辆', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            levelName: '布局自由度测试',
+            conveyorCapacity: '10',
+            passengerQueueText: '1,1,1,1,1,1,1,1,3,3',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t1\t4\t0\t\t',
+              '2\t1\t4\t0\t\t',
+              '3\t3\t4\t0\t\t',
+              '4\t1\t4\t0\t\t5',
+              '5\t3\t4\t1\t4\t'
+            ].join('\n'),
+            clickSequenceText: '1,2'
+          });
+          state = core.runStableSimulationState(state);
+          const freedom = state.simulation.result.layoutFreedom;
+          equal(freedom.swappableGroups.map(group => group.vehicleIds), [[1, 2]], '同签名车辆应进入可互换组');
+          equal(freedom.freelyPlaceableVehicleIds, [3], '未点击且无路径依赖车辆应进入自由摆放候选');
+          assert(!freedom.rigidVehicles.some(vehicle => vehicle.vehicleId === 4), '普通入口分支车不应直接标为刚性车辆');
+          assert(!freedom.rigidVehicles.some(vehicle => vehicle.vehicleId === 5), '普通被解锁车不应直接标为刚性车辆');
+
+          const report = core.getStableSimulationReportText(state);
+          assert(report.includes('可互换车辆组：#1红色4 ↔ #2红色4'), '报告总览应输出可互换车辆组');
+          assert(report.includes('自由摆放候选：#3蓝色4'), '报告总览应输出自由摆放候选');
+          assert(report.includes('刚性车辆：无'), '普通路径依赖不应让报告输出全员刚性');
+        });
+
+        test('立即结算模拟器支持把旧模拟记录 MD 导出为带双层角色标注的 MD', () => {
+          const oldReport = [
+            '# 旧记录 立即结算模拟',
+            '',
+            '## 输入',
+            '传送带容量：4',
+            '点击顺序：1,2',
+            '',
+            '## 步骤日志',
+            '步骤\t点击车辆\t进入车位\t上客统计\t开走车辆\t车位状态\t传送带\t补充队列剩余\t警告',
+            '1\t#1红色4\t进车位 1\t上客 3（#1红色4）\t无\t1:#1红色4 剩1 | 2:空 | 3:空 | 4:空\t3,3,3,3\t0\t无',
+            '2\t#2蓝色4\t进车位 2\t上客 4（#2蓝色4）、上客 1（#1红色4）\t开走 #2蓝色4、#1红色4\t1:空 | 2:空 | 3:空 | 4:空\t空\t0\t无',
+            '',
+            '## 总览',
+            '总点击数：2',
+            '成功进车数：2',
+            '开走车辆数：2',
+            '剩余乘客：无',
+            '警告步骤：无',
+            '最终车位：空'
+          ].join('\n');
+
+          const vehicleTableText = [
+            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+            '1\t1\t4\t0\t\t2,3,4,5',
+            '2\t3\t4\t5\t1\t',
+            '3\t1\t4\t0\t\t',
+            '4\t1\t4\t0\t\t',
+            '5\t1\t4\t0\t\t'
+          ].join('\n');
+          const annotated = core.annotateStableSimulationReportMarkdown('1-立即结算模拟.md', oldReport, vehicleTableText, core.createInitialState());
+          equal(annotated.errors, [], '旧 MD 标注不应报错');
+          equal(annotated.filename, '1-立即结算模拟-带角色标注.md', '导出文件名应追加标注后缀');
+          assert(annotated.text.includes('步骤\t点击车辆\t分层车辆id\t结算角色\t路径角色\t进入车位'), '旧 MD 步骤表应增加分层车辆id和双层角色列');
+          assert(annotated.text.includes('#1红色4\tL0:#1\t等待占位车\t入口分支解锁车\t进车位 1'), '旧 MD 应标注分层、等待占位车和入口分支解锁车');
+          assert(annotated.text.includes('#2蓝色4\tL5:#2\t补清触发车\t深层终点车\t进车位 2'), '旧 MD 应标注分层、补清触发车和深层终点车');
+          assert(annotated.text.includes('结算角色：等待占位车：#1红色4；补清触发车：#2蓝色4'), '旧 MD 总览应增加结算角色汇总');
+          assert(annotated.text.includes('路径角色：入口分支解锁车：#1红色4；深层终点车：#2蓝色4'), '旧 MD 总览应增加路径角色汇总');
+          assert(annotated.text.includes('分层车辆汇总：L0：#1红色4；L5：#2蓝色4'), '旧 MD 总览应增加分层车辆汇总');
+        });
+
+        test('旧记录标注导出可从文件名识别关卡对应关系', () => {
+          equal(core.getStableSimulationRecordLevelKey('9-立即结算模拟.md'), '9', '旧 MD 文件名应识别关卡号');
+          equal(core.getStableSimulationRecordLevelKey('level9.csv'), '9', 'level CSV 文件名应识别关卡号');
+          equal(core.getStableSimulationRecordLevelKey('Level_10.csv'), '10', '带下划线的 level CSV 文件名应识别关卡号');
+          equal(core.getStableSimulationRecordLevelKey('无编号.md'), '', '无数字文件名不应伪造关卡号');
         });
 
         test('立即结算模拟器生成 Markdown 文件名', () => {
@@ -731,6 +929,63 @@
           equal(result.finalSlots.map(slot => slot && slot.vehicleId), [1, 2, 3, 4], '无空车位时不应覆盖已有车位');
         });
 
+        test('立即结算模拟器可按车辆表拟合乘客队列和点击顺序', () => {
+          const input = {
+            levelName: '拟合测试',
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1,2,2,2,2,3,3,3,3',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t1\t4\t0\t\t3',
+              '2\t2\t4\t0\t\t',
+              '3\t3\t4\t1\t1\t'
+            ].join('\n'),
+            clickSequenceText: ''
+          };
+
+          const fitted = core.fitStableSimulationPassengerQueue(core.createInitialState(), input);
+          equal(fitted.errors, [], '拟合队列不应报错');
+          equal(fitted.clickSequenceText, '1,2,3', '拟合应生成依赖可解锁点击顺序');
+          equal(fitted.passengerQueueText.split(',').map(Number).sort((a, b) => a - b), [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3], '拟合队列应保留原颜色总量');
+
+          const result = core.runStableSimulation(core.createInitialState(), {
+            ...input,
+            passengerQueueText: fitted.passengerQueueText,
+            clickSequenceText: fitted.clickSequenceText
+          });
+          equal(result.errors, [], '拟合结果运行不应报错');
+          equal(result.steps.length, 3, '拟合结果应覆盖全部车辆');
+          equal(result.steps.flatMap(step => step.departedVehicleIds).sort((a, b) => a - b), [1, 2, 3], '拟合结果应让所有车辆开走');
+          assert(result.steps.every(step => step.enteredSlot !== null && step.warnings.length === 0), '拟合结果不应堵车或产生警告');
+        });
+
+        test('拟合队列可用竞品车辆表作为无录屏时的路径目标', () => {
+          let state = core.createInitialState();
+          state = core.setQueueFitInput(state, {
+            levelName: '竞品表目标测试',
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1,2,2,2,2,3,3,3,3',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t1\t4\t0\t\t3',
+              '2\t2\t4\t0\t\t',
+              '3\t3\t4\t1\t1\t'
+            ].join('\n'),
+            targetVehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '101\t1\t4\t0\t\t102,103,104,105,106,107,108,109',
+              '102\t2\t4\t2\t101\t110,111,112,113',
+              '103\t3\t4\t6\t102\t'
+            ].join('\n')
+          });
+
+          state = core.runQueueFitState(state);
+          equal(state.queueFit.errors, [], '用竞品车辆表目标拟合不应报错');
+          assert(state.queueFit.fittedPassengerQueueText, '应输出拟合后的乘客队列');
+          equal(state.queueFit.targetPathSummary.map(group => group.role), ['核心入口解锁车', '中继大分支解锁车', '深层终点车'], '应保存竞品路径角色目标');
+          equal(state.queueFit.targetLayerSummary.map(group => group.layerLabel), ['L0', 'L2', 'L6'], '应保存竞品分层目标');
+        });
+
         test('核心状态操作不突变输入状态', () => {
           const appendInput = core.createInitialState();
           assertPure('appendValue()', appendInput, () => core.appendValue(appendInput, 'conveyor', 1));
@@ -878,10 +1133,10 @@
           });
         });
 
-        test('工作台包含七阶段导航、viewport 和保存反馈状态区域', () => {
+        test('工作台包含六阶段导航、viewport 和保存反馈状态区域', () => {
           assert(app, 'QueueRecorderApp 不存在');
           const stageButtons = [...appDocument.querySelectorAll('.stage-button[data-stage]')];
-          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'simulation'], '五个导航按钮错误');
+          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'simulation', 'queueFit'], '六个导航按钮错误');
           assert(!appDocument.querySelector('.stage-button[data-stage="parking"]'), '不应再显示车位记录入口');
           assert(!appDocument.querySelector('.stage-button[data-stage="script"]'), '不应再显示剧本还原入口');
           equal(app.getState().activeStage, 'conveyor', '初始活动阶段应为 conveyor');
@@ -1043,6 +1298,14 @@
           });
           const csvFileInput = appDocument.querySelector('#simulationVehicleCsvFile');
           assert(csvFileInput && csvFileInput.accept.includes('.csv'), '立即结算模拟车辆表 CSV 文件导入控件缺失');
+          const recordMdInput = appDocument.querySelector('#simulationRecordMdFiles');
+          assert(recordMdInput && recordMdInput.accept.includes('.md'), '旧模拟记录 MD 导入控件缺失');
+          assert(recordMdInput.multiple, '旧模拟记录 MD 导入控件应支持多选');
+          const recordVehicleCsvInput = appDocument.querySelector('#simulationRecordVehicleCsvFile');
+          assert(recordVehicleCsvInput && recordVehicleCsvInput.accept.includes('.csv'), '旧记录标注导出车辆 CSV 导入控件缺失');
+          assert(recordVehicleCsvInput.multiple, '旧记录标注导出车辆 CSV 导入控件应支持多选并按关卡匹配');
+          assert(appDocument.querySelector('.stable-simulation-record-vehicle-source'), '旧记录标注导出车辆 CSV 状态提示缺失');
+          assert(!appDocument.querySelector('[data-action="fit-stable-simulation-queue"]'), '立即结算模拟不应包含拟合队列按钮');
 
           appDocument.querySelector('.simulation-input[data-simulation-field="conveyorCapacity"]').value = '4';
           appDocument.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]').value = '1,1,1,1,3,3';
@@ -1115,6 +1378,21 @@
           assert(appDocument.querySelector('.script-report').textContent.includes('#1红色4'), '报告未显示点击车辆');
         });
 
+        test('拟合队列页面独立于立即结算模拟', () => {
+          appDocument.querySelector('.stage-button[data-stage="queueFit"]').click();
+          equal(app.getState().activeStage, 'queueFit', '未进入拟合队列页面');
+          equal(appDocument.querySelector('.workspace-title').textContent, '拟合队列', '拟合队列页面标题错误');
+          ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'targetRecordText', 'targetVehicleTableText'].forEach(field => {
+            assert(appDocument.querySelector(`.queue-fit-input[data-queue-fit-field="${field}"]`), `缺少拟合 ${field} 输入控件`);
+          });
+          const recordMdInput = appDocument.querySelector('#queueFitRecordMdFile');
+          assert(recordMdInput && recordMdInput.accept.includes('.md'), '缺少竞品结算模拟记录 MD 导入控件');
+          const targetVehicleCsvInput = appDocument.querySelector('#queueFitTargetVehicleCsvFile');
+          assert(targetVehicleCsvInput && targetVehicleCsvInput.accept.includes('.csv'), '缺少竞品车辆数据表 CSV 导入控件');
+          assert(appDocument.querySelector('[data-action="run-queue-fit"]'), '缺少运行拟合按钮');
+          assert(appDocument.querySelector('.queue-fit-output'), '缺少拟合输出区');
+        });
+
         test('立即结算模拟页面支持点击截图标记记录选车', () => {
           let state = core.createInitialState();
           state = core.setStableSimulationInput(state, {
@@ -1155,6 +1433,9 @@
           equal(app.getState().simulation.clickSequenceText, '1', '点击截图标记未追加选车顺序');
           equal(appDocument.querySelector('.simulation-input[data-simulation-field="clickSequenceText"]').value, '1', '截图选车后文本框未同步');
           assert(appDocument.querySelector('.script-report').textContent.includes('#1红色4'), '截图选车后报告未更新');
+          const clickedMarker = appDocument.querySelector('[data-action="append-stable-simulation-hotspot-click"][data-hotspot-id="1"]');
+          assert(clickedMarker.textContent.includes('✓'), '点击后的车辆标记应显示打勾');
+          assert(clickedMarker.disabled, '点击后的车辆标记应禁用，避免重复记录');
 
           appDocument.querySelector('[data-action="delete-stable-simulation-hotspot"][data-hotspot-id="1"]').click();
           equal(app.getState().simulation.hotspots, [], '删除截图标记失败');
