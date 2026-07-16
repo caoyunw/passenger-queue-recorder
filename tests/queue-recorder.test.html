@@ -501,6 +501,16 @@
           equal(JSON.parse(JSON.stringify(issue)), issue, '问题对象不能 JSON 往返');
         });
 
+        test('压力队列问题 helper 将 null 和非对象根 detail 视为空 detail', () => {
+          const expected = { category: 'a', code: 'b', message: 'c' };
+          [null, 'text', 42, [{ numeric: 'key' }]].forEach((detail, index) => {
+            const issue = pressureCore.createIssue('a', 'b', 'c', detail);
+            equal(issue, expected, `非普通对象根 detail 案例 ${index} 扩展了 issue`);
+            equal(Object.keys(issue).sort(), ['category', 'code', 'message'].sort(), `非普通对象根 detail 案例 ${index} 混入数字键`);
+            JSON.stringify(issue);
+          });
+        });
+
         test('压力队列问题 helper 递归隔离恶意 detail 且永远可 JSON 保存', () => {
           let getterCalls = 0;
           const symbolKey = Symbol('hidden');

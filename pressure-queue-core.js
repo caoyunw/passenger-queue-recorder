@@ -269,7 +269,10 @@
   function createIssue(category, code, message, detail = {}) {
     const clonedDetail = cloneJsonSafeDetail(detail);
     const issue = {};
-    if (clonedDetail !== INVALID_JSON_DETAIL && !Array.isArray(clonedDetail)) {
+    if (clonedDetail !== INVALID_JSON_DETAIL
+      && clonedDetail !== null
+      && !Array.isArray(clonedDetail)
+      && isPlainJsonObject(clonedDetail)) {
       Object.keys(clonedDetail).forEach(key => {
         if (FIXED_ISSUE_KEYS.has(key)) return;
         Object.defineProperty(issue, key, {
