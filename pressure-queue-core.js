@@ -154,21 +154,256 @@
     return counts;
   }
 
+  const INVALID_JSON_DETAIL = Symbol('invalid-json-detail');
+  const FIXED_ISSUE_KEYS = new Set(['category', 'code', 'message']);
+
+  function isPlainJsonObject(value) {
+    try {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype === null) return true;
+      if (Object.getPrototypeOf(prototype) !== null) return false;
+
+      const constructorDescriptor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
+      if (!constructorDescriptor
+        || !Object.prototype.hasOwnProperty.call(constructorDescriptor, 'value')
+        || typeof constructorDescriptor.value !== 'function') {
+        return false;
+      }
+      const nameDescriptor = Object.getOwnPropertyDescriptor(constructorDescriptor.value, 'name');
+      return Boolean(nameDescriptor
+        && Object.prototype.hasOwnProperty.call(nameDescriptor, 'value')
+        && nameDescriptor.value === 'Object');
+    } catch {
+      return false;
+    }
+  }
+
+  function cloneJsonSafeDetail(value, ancestors = new WeakSet()) {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : INVALID_JSON_DETAIL;
+    if (typeof value !== 'object') return INVALID_JSON_DETAIL;
+
+    let isArray;
+    try {
+      isArray = Array.isArray(value);
+    } catch {
+      return INVALID_JSON_DETAIL;
+    }
+    if (!isArray && !isPlainJsonObject(value)) return INVALID_JSON_DETAIL;
+    if (ancestors.has(value)) return INVALID_JSON_DETAIL;
+
+    ancestors.add(value);
+    try {
+      if (isArray) {
+        let length;
+        try {
+          length = value.length;
+        } catch {
+          return INVALID_JSON_DETAIL;
+        }
+
+        const copy = [];
+        for (let index = 0; index < length; index += 1) {
+          let descriptor;
+          try {
+            descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+          } catch {
+            return INVALID_JSON_DETAIL;
+          }
+          if (!descriptor
+            || !descriptor.enumerable
+            || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+            return INVALID_JSON_DETAIL;
+          }
+          const clonedValue = cloneJsonSafeDetail(descriptor.value, ancestors);
+          if (clonedValue === INVALID_JSON_DETAIL) return INVALID_JSON_DETAIL;
+          copy.push(clonedValue);
+        }
+        return copy;
+      }
+
+      let keys;
+      try {
+        keys = Reflect.ownKeys(value);
+      } catch {
+        return INVALID_JSON_DETAIL;
+      }
+      const copy = {};
+      keys.forEach(key => {
+        if (typeof key !== 'string' || key === 'toJSON') return;
+        let descriptor;
+        try {
+          descriptor = Object.getOwnPropertyDescriptor(value, key);
+        } catch {
+          return;
+        }
+        if (!descriptor
+          || !descriptor.enumerable
+          || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+          return;
+        }
+        const clonedValue = cloneJsonSafeDetail(descriptor.value, ancestors);
+        if (clonedValue === INVALID_JSON_DETAIL) return;
+        Object.defineProperty(copy, key, {
+          value: clonedValue,
+          enumerable: true,
+          configurable: true,
+          writable: true
+        });
+      });
+      return copy;
+    } finally {
+      ancestors.delete(value);
+    }
+  }
+
+  function toJsonSafeIssueText(value) {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
+    if (typeof value === 'boolean' || typeof value === 'bigint' || typeof value === 'symbol') {
+      return String(value);
+    }
+    return '';
+  }
+
   function createIssue(category, code, message, detail = {}) {
-    const safeDetail = detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {};
-    return { ...safeDetail, category, code, message };
+    const clonedDetail = cloneJsonSafeDetail(detail);
+    const issue = {};
+    if (clonedDetail !== INVALID_JSON_DETAIL && !Array.isArray(clonedDetail)) {
+      Object.keys(clonedDetail).forEach(key => {
+        if (FIXED_ISSUE_KEYS.has(key)) return;
+        Object.defineProperty(issue, key, {
+          value: clonedDetail[key],
+          enumerable: true,
+          configurable: true,
+          writable: true
+        });
+      });
+    }
+    issue.category = toJsonSafeIssueText(category);
+    issue.code = toJsonSafeIssueText(code);
+    issue.message = toJsonSafeIssueText(message);
+    return issue;
+  }
+
+  function inspectDenseNonNegativeIntegerArray(value) {
+    let isArray;
+    try {
+      isArray = Array.isArray(value);
+    } catch {
+      return { valid: false, invalidIndices: [-1], values: [] };
+    }
+    if (!isArray) return { valid: false, invalidIndices: [-1], values: [] };
+
+    let length;
+    try {
+      length = value.length;
+    } catch {
+      return { valid: false, invalidIndices: [-1], values: [] };
+    }
+    const invalidIndices = [];
+    const values = new Array(length);
+    for (let index = 0; index < length; index += 1) {
+      let descriptor;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      } catch {
+        invalidIndices.push(index);
+        continue;
+      }
+      if (!descriptor
+        || !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        || !isNonNegativeInteger(descriptor.value)) {
+        invalidIndices.push(index);
+      } else {
+        values[index] = descriptor.value;
+      }
+    }
+    return { valid: invalidIndices.length === 0, invalidIndices, values };
+  }
+
+  function readDenseArrayEntries(value) {
+    let isArray;
+    try {
+      isArray = Array.isArray(value);
+    } catch {
+      return [];
+    }
+    if (!isArray) return [];
+
+    let lengthDescriptor;
+    try {
+      lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+    } catch {
+      return [];
+    }
+    if (!lengthDescriptor
+      || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value')
+      || !isNonNegativeInteger(lengthDescriptor.value)) {
+      return [];
+    }
+
+    const entries = new Array(lengthDescriptor.value);
+    for (let index = 0; index < entries.length; index += 1) {
+      let descriptor;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      } catch {
+        descriptor = null;
+      }
+      entries[index] = descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        ? descriptor.value
+        : INVALID_JSON_DETAIL;
+    }
+    return entries;
+  }
+
+  function readOwnDataValue(value, key) {
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        ? { present: true, value: descriptor.value }
+        : { present: false, value: undefined };
+    } catch {
+      return { present: false, value: undefined };
+    }
   }
 
   function validateBaseInput(input) {
     const errors = [];
-    const vehicles = Array.isArray(input && input.vehicles) ? input.vehicles : [];
-    const passengers = Array.isArray(input && input.passengers) ? input.passengers : [];
-    const path = Array.isArray(input && input.path) ? input.path : [];
+    const vehicles = readDenseArrayEntries(input && input.vehicles);
+    const passengerInput = input && input.passengers;
+    const passengerInspection = inspectDenseNonNegativeIntegerArray(passengerInput);
+    const passengers = passengerInspection.valid ? passengerInspection.values : [];
+    const pathInput = input && input.path;
+    const pathInspection = inspectDenseNonNegativeIntegerArray(pathInput);
+    const path = pathInspection.values;
     const conveyorCapacity = input && input.conveyorCapacity;
     const hasValidConveyorCapacity = isPositiveInteger(conveyorCapacity);
     const passengerCounts = countValues(passengers);
     const seatCounts = new Map();
     const vehiclesById = new Map();
+
+    passengerInspection.invalidIndices.forEach(index => {
+      errors.push(createIssue(
+        'input_error',
+        'invalid_passenger_value',
+        index < 0
+          ? '乘客队列必须是稠密数组'
+          : `第 ${index + 1} 个乘客颜色必须是安全非负整数`,
+        { index }
+      ));
+    });
+    pathInspection.invalidIndices.forEach(index => {
+      errors.push(createIssue(
+        'input_error',
+        'invalid_path_vehicle_id',
+        index < 0
+          ? '正确路径必须是稠密数组'
+          : `第 ${index + 1} 步车辆 id 必须是安全非负整数`,
+        { step: index < 0 ? 0 : index + 1, index }
+      ));
+    });
 
     if (!hasValidConveyorCapacity) {
       errors.push(createIssue(
@@ -181,80 +416,144 @@
       errors.push(createIssue('input_error', 'empty_vehicle_table', '车辆表不能为空'));
     }
 
-    vehicles.forEach((vehicle, index) => {
-      if (!vehicle || typeof vehicle !== 'object' || Array.isArray(vehicle)) {
+    const vehicleRecords = vehicles.map((vehicle, index) => {
+      const validObject = vehicle !== INVALID_JSON_DETAIL && isPlainJsonObject(vehicle);
+      if (!validObject) return { index, vehicle, validObject: false };
+
+      const idProperty = readOwnDataValue(vehicle, 'id');
+      const colorProperty = readOwnDataValue(vehicle, 'colorValue');
+      const capacityProperty = readOwnDataValue(vehicle, 'capacity');
+      const frontProperty = readOwnDataValue(vehicle, 'frontVehicleIds');
+      const backProperty = readOwnDataValue(vehicle, 'backVehicleIds');
+      const frontInspection = inspectDenseNonNegativeIntegerArray(frontProperty.value);
+      const backInspection = inspectDenseNonNegativeIntegerArray(backProperty.value);
+      return {
+        index,
+        vehicle,
+        validObject: true,
+        id: idProperty.value,
+        colorValue: colorProperty.value,
+        capacity: capacityProperty.value,
+        validId: idProperty.present && isNonNegativeInteger(idProperty.value),
+        validColorValue: colorProperty.present && isNonNegativeInteger(colorProperty.value),
+        validCapacity: capacityProperty.present && isPositiveInteger(capacityProperty.value),
+        frontInspection: frontProperty.present
+          ? frontInspection
+          : { valid: false, invalidIndices: [-1], values: [] },
+        backInspection: backProperty.present
+          ? backInspection
+          : { valid: false, invalidIndices: [-1], values: [] }
+      };
+    });
+    const vehicleIdCounts = new Map();
+    vehicleRecords.forEach(record => {
+      if (record.validObject && record.validId) {
+        vehicleIdCounts.set(record.id, (vehicleIdCounts.get(record.id) || 0) + 1);
+      }
+    });
+    const rawVehicleIds = new Set(vehicleIdCounts.keys());
+    const rawVehiclesById = new Map();
+    const reportedDuplicateIds = new Set();
+
+    vehicleRecords.forEach(record => {
+      const { index } = record;
+      if (!record.validObject) {
         errors.push(createIssue(
           'input_error',
           'invalid_vehicle',
-          `第 ${index + 1} 辆车必须是对象`,
+          `第 ${index + 1} 辆车必须是普通对象`,
           { vehicleIndex: index }
         ));
         return;
       }
 
-      const validId = isNonNegativeInteger(vehicle.id);
-      const validColorValue = isNonNegativeInteger(vehicle.colorValue);
-      const validCapacity = isPositiveInteger(vehicle.capacity);
-      const validFrontVehicleIds = Array.isArray(vehicle.frontVehicleIds)
-        && vehicle.frontVehicleIds.every(isNonNegativeInteger);
-
-      if (!validId) {
+      if (!record.validId) {
         errors.push(createIssue(
           'input_error',
           'invalid_vehicle_id',
           `第 ${index + 1} 辆车的 id 必须是安全非负整数`,
           { vehicleIndex: index }
         ));
-      } else if (vehiclesById.has(vehicle.id)) {
-        errors.push(createIssue(
-          'input_error',
-          'duplicate_vehicle_id',
-          `车辆 id ${vehicle.id} 重复`,
-          { vehicleId: vehicle.id }
-        ));
       } else {
-        vehiclesById.set(vehicle.id, vehicle);
+        if (!rawVehiclesById.has(record.id)) rawVehiclesById.set(record.id, record);
+        if (vehicleIdCounts.get(record.id) > 1 && !reportedDuplicateIds.has(record.id)) {
+          reportedDuplicateIds.add(record.id);
+          errors.push(createIssue(
+            'input_error',
+            'duplicate_vehicle_id',
+            `车辆 id ${record.id} 重复`,
+            { vehicleId: record.id }
+          ));
+        }
       }
 
-      if (!validColorValue) {
+      if (!record.validColorValue) {
         errors.push(createIssue(
           'input_error',
           'invalid_vehicle_color_value',
-          `车辆 #${validId ? vehicle.id : index + 1} 的颜色值必须是安全非负整数`,
+          `车辆 #${record.validId ? record.id : index + 1} 的颜色值必须是安全非负整数`,
           { vehicleIndex: index }
         ));
       }
-      if (!validCapacity) {
+      if (!record.validCapacity) {
         errors.push(createIssue(
           'input_error',
           'invalid_vehicle_capacity',
-          `车辆 #${validId ? vehicle.id : index + 1} 的座位数必须是安全正整数`,
+          `车辆 #${record.validId ? record.id : index + 1} 的座位数必须是安全正整数`,
           { vehicleIndex: index }
         ));
       }
-      if (!validFrontVehicleIds) {
+      if (!record.frontInspection.valid) {
         errors.push(createIssue(
           'input_error',
           'invalid_front_vehicle_ids',
-          `车辆 #${validId ? vehicle.id : index + 1} 的前方车辆列表非法`,
+          `车辆 #${record.validId ? record.id : index + 1} 的前方车辆列表非法`,
+          { vehicleIndex: index }
+        ));
+      } else if (record.validId) {
+        record.frontInspection.values.forEach(frontVehicleId => {
+          if (!rawVehicleIds.has(frontVehicleId)) {
+            errors.push(createIssue(
+              'input_error',
+              'unknown_front_vehicle',
+              `车辆 #${record.id} 的前方车辆 #${frontVehicleId} 不存在`,
+              { vehicleId: record.id, frontVehicleId }
+            ));
+          }
+        });
+      }
+      if (!record.backInspection.valid) {
+        errors.push(createIssue(
+          'input_error',
+          'invalid_back_vehicle_ids',
+          `车辆 #${record.validId ? record.id : index + 1} 的后方车辆列表非法`,
           { vehicleIndex: index }
         ));
       }
 
-      if (validColorValue && validCapacity) {
+      if (record.validColorValue && record.validCapacity) {
         seatCounts.set(
-          vehicle.colorValue,
-          (seatCounts.get(vehicle.colorValue) || 0) + vehicle.capacity
+          record.colorValue,
+          (seatCounts.get(record.colorValue) || 0) + record.capacity
         );
       }
+
+      const completeAndUnique = record.validId
+        && record.validColorValue
+        && record.validCapacity
+        && record.frontInspection.valid
+        && record.backInspection.valid
+        && vehicleIdCounts.get(record.id) === 1;
+      if (completeAndUnique) vehiclesById.set(record.id, record.vehicle);
     });
 
-    const vehicleIds = [...vehiclesById.keys()];
+    const vehicleIds = [...rawVehicleIds];
     const uniquePathIds = new Set(path);
-    const pathIsExact = vehiclesById.size === vehicles.length
+    const pathIsExact = pathInspection.valid
+      && rawVehiclesById.size === vehicles.length
       && path.length === vehicles.length
       && uniquePathIds.size === path.length
-      && path.every(vehicleId => vehiclesById.has(vehicleId))
+      && path.every(vehicleId => rawVehiclesById.has(vehicleId))
       && vehicleIds.every(vehicleId => uniquePathIds.has(vehicleId));
     if (!pathIsExact) {
       errors.push(createIssue(
@@ -265,22 +564,31 @@
     }
 
     const remainingVehicleIds = new Set(vehicleIds);
-    path.forEach((vehicleId, index) => {
-      const vehicle = vehiclesById.get(vehicleId);
-      if (!vehicle) {
+    const seenPathVehicleIds = new Set();
+    const invalidPathIndices = new Set(pathInspection.invalidIndices);
+    for (let index = 0; index < path.length; index += 1) {
+      if (invalidPathIndices.has(index)) continue;
+      const vehicleId = path[index];
+      const vehicleRecord = rawVehiclesById.get(vehicleId);
+      if (!vehicleRecord) {
         errors.push(createIssue(
           'input_error',
           'unknown_path_vehicle',
           `第 ${index + 1} 步车辆 #${String(vehicleId)} 不存在`,
           { step: index + 1, vehicleId }
         ));
-        return;
+        continue;
       }
 
-      const frontVehicleIds = Array.isArray(vehicle.frontVehicleIds)
-        ? vehicle.frontVehicleIds.filter(isNonNegativeInteger)
+      const isDuplicateClick = seenPathVehicleIds.has(vehicleId);
+      seenPathVehicleIds.add(vehicleId);
+
+      const frontVehicleIds = vehicleRecord.frontInspection.valid
+        ? vehicleRecord.frontInspection.values
         : [];
-      const blockerIds = frontVehicleIds.filter(frontId => remainingVehicleIds.has(frontId));
+      const blockerIds = frontVehicleIds.filter(frontId => (
+        !rawVehicleIds.has(frontId) || remainingVehicleIds.has(frontId)
+      ));
       if (blockerIds.length > 0) {
         errors.push(createIssue(
           'input_error',
@@ -288,32 +596,35 @@
           `第 ${index + 1} 步车辆 #${vehicleId} 仍被阻挡`,
           { step: index + 1, vehicleId, blockerIds }
         ));
+      } else if (!isDuplicateClick) {
+        remainingVehicleIds.delete(vehicleId);
       }
-      remainingVehicleIds.delete(vehicleId);
-    });
+    }
 
-    const colorValues = new Set([...passengerCounts.keys(), ...seatCounts.keys()]);
-    colorValues.forEach(colorValue => {
-      const passengerCount = passengerCounts.get(colorValue) || 0;
-      const seatCount = seatCounts.get(colorValue) || 0;
-      if (passengerCount !== seatCount) {
+    if (passengerInspection.valid) {
+      const colorValues = new Set([...passengerCounts.keys(), ...seatCounts.keys()]);
+      colorValues.forEach(colorValue => {
+        const passengerCount = passengerCounts.get(colorValue) || 0;
+        const seatCount = seatCounts.get(colorValue) || 0;
+        if (passengerCount !== seatCount) {
+          errors.push(createIssue(
+            'input_error',
+            'color_total_mismatch',
+            `颜色 ${String(colorValue)}：乘客 ${passengerCount} / 座位 ${seatCount}`,
+            { colorValue, passengerCount, seatCount }
+          ));
+        }
+      });
+
+      if (hasValidConveyorCapacity
+        && (passengers.length < conveyorCapacity || passengers.length - conveyorCapacity < 10)) {
         errors.push(createIssue(
           'input_error',
-          'color_total_mismatch',
-          `颜色 ${String(colorValue)}：乘客 ${passengerCount} / 座位 ${seatCount}`,
-          { colorValue, passengerCount, seatCount }
+          'right_preview_too_short',
+          `乘客总数需要包含 ${conveyorCapacity} 人传送带与 10 人右侧预告`,
+          { conveyorCapacity, passengerCount: passengers.length }
         ));
       }
-    });
-
-    if (hasValidConveyorCapacity
-      && (passengers.length < conveyorCapacity || passengers.length - conveyorCapacity < 10)) {
-      errors.push(createIssue(
-        'input_error',
-        'right_preview_too_short',
-        `乘客总数需要包含 ${conveyorCapacity} 人传送带与 10 人右侧预告`,
-        { conveyorCapacity, passengerCount: passengers.length }
-      ));
     }
 
     return {

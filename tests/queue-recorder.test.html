@@ -223,10 +223,10 @@
           conveyorCapacity: 4,
           passengers: [3, 3, 3, 3, 4, 4, 4, 4, 1, 1, 1, 1, 2, 2, 2, 2],
           vehicles: [
-            { id: 1, colorValue: 3, capacity: 4, frontVehicleIds: [] },
-            { id: 2, colorValue: 4, capacity: 4, frontVehicleIds: [1] },
-            { id: 3, colorValue: 1, capacity: 4, frontVehicleIds: [] },
-            { id: 4, colorValue: 2, capacity: 4, frontVehicleIds: [] }
+            { id: 1, colorValue: 3, capacity: 4, frontVehicleIds: [], backVehicleIds: [2] },
+            { id: 2, colorValue: 4, capacity: 4, frontVehicleIds: [1], backVehicleIds: [] },
+            { id: 3, colorValue: 1, capacity: 4, frontVehicleIds: [], backVehicleIds: [] },
+            { id: 4, colorValue: 2, capacity: 4, frontVehicleIds: [], backVehicleIds: [] }
           ],
           path: [1, 2, 3, 4],
           annotations: [],
@@ -501,6 +501,63 @@
           equal(JSON.parse(JSON.stringify(issue)), issue, '问题对象不能 JSON 往返');
         });
 
+        test('压力队列问题 helper 递归隔离恶意 detail 且永远可 JSON 保存', () => {
+          let getterCalls = 0;
+          const symbolKey = Symbol('hidden');
+          const detail = {
+            category: 'overridden',
+            code: 'overridden',
+            message: 'overridden',
+            nested: { keep: 'value', invalidBigInt: 10n, invalidNumber: Number.NaN },
+            dense: [null, true, 'text', 2.5, { keep: 3 }],
+            sparse: [, 1],
+            invalidArray: [1, 2n],
+            invalidUndefined: undefined,
+            invalidFunction: () => 'bad',
+            invalidInfinity: Number.POSITIVE_INFINITY,
+            toJSON() {
+              throw new Error('toJSON 不得被保留或调用');
+            }
+          };
+          detail.self = detail;
+          detail[symbolKey] = 'symbol value';
+          Object.defineProperty(detail, 'hidden', { enumerable: false, value: 'hidden value' });
+          Object.defineProperty(detail, 'dangerous', {
+            enumerable: true,
+            get() {
+              getterCalls += 1;
+              throw new Error('getter 不得执行');
+            }
+          });
+
+          const issue = pressureCore.createIssue('input_error', 'safe_code', '安全消息', detail);
+          equal(issue, {
+            category: 'input_error',
+            code: 'safe_code',
+            message: '安全消息',
+            nested: { keep: 'value' },
+            dense: [null, true, 'text', 2.5, { keep: 3 }]
+          }, '恶意 detail 未被严格过滤');
+          equal(getterCalls, 0, 'detail getter 被执行');
+          assert(issue.nested !== detail.nested, '嵌套对象引用未隔离');
+          assert(issue.dense !== detail.dense && issue.dense[4] !== detail.dense[4], '嵌套数组引用未隔离');
+          assert(Object.getPrototypeOf(issue.nested) === Object.getPrototypeOf(issue), '嵌套对象未使用输出 realm 的普通原型');
+          equal(JSON.parse(JSON.stringify(issue)), issue, '过滤后 issue 仍不能 JSON 往返');
+        });
+
+        test('压力队列问题 helper 将 __proto__ 作为普通数据而不污染输出原型', () => {
+          const detail = { nested: {} };
+          Object.defineProperty(detail, '__proto__', {
+            value: { keep: 'prototype-like data' },
+            enumerable: true
+          });
+          const issue = pressureCore.createIssue('input_error', 'safe_proto', '原型安全', detail);
+          assert(Object.prototype.hasOwnProperty.call(issue, '__proto__'), '__proto__ 未作为自有数据保留');
+          equal(issue.__proto__, { keep: 'prototype-like data' }, '__proto__ 数据复制错误');
+          assert(Object.getPrototypeOf(issue) === Object.getPrototypeOf(issue.nested), '输出 issue 原型被 detail 污染');
+          JSON.stringify(issue);
+        });
+
         test('压力队列正确路径逐步检查未点击的前方阻挡', () => {
           const result = pressureCore.validateBaseInput(makePressureInput({ path: [2, 1, 3, 4] }));
           const blocked = result.errors.find(error => error.code === 'blocked_path_step');
@@ -510,6 +567,66 @@
             vehicleId: 2,
             blockerIds: [1]
           }, '阻挡步骤细节错误');
+        });
+
+        test('压力队列被挡车辆不从 remaining 删除并继续作为级联 blocker', () => {
+          const result = pressureCore.validateBaseInput({
+            conveyorCapacity: 4,
+            passengers: Array(14).fill(1),
+            vehicles: [
+              { id: 1, colorValue: 1, capacity: 4, frontVehicleIds: [2], backVehicleIds: [3] },
+              { id: 2, colorValue: 1, capacity: 4, frontVehicleIds: [], backVehicleIds: [1] },
+              { id: 3, colorValue: 1, capacity: 6, frontVehicleIds: [1], backVehicleIds: [] }
+            ],
+            path: [1, 3, 2]
+          });
+          const blockedSteps = result.errors
+            .filter(error => error.code === 'blocked_path_step')
+            .map(error => ({ step: error.step, vehicleId: error.vehicleId, blockerIds: error.blockerIds }));
+          equal(blockedSteps, [
+            { step: 1, vehicleId: 1, blockerIds: [2] },
+            { step: 2, vehicleId: 3, blockerIds: [1] }
+          ], '被挡车辆被误删后丢失了级联阻挡');
+        });
+
+        test('压力队列重复点击即使当下无 blocker 也不得删除车辆', () => {
+          const result = pressureCore.validateBaseInput({
+            conveyorCapacity: 4,
+            passengers: Array(14).fill(1),
+            vehicles: [
+              { id: 1, colorValue: 1, capacity: 4, frontVehicleIds: [2], backVehicleIds: [3] },
+              { id: 2, colorValue: 1, capacity: 4, frontVehicleIds: [], backVehicleIds: [1] },
+              { id: 3, colorValue: 1, capacity: 6, frontVehicleIds: [1], backVehicleIds: [] }
+            ],
+            path: [1, 2, 1, 3]
+          });
+          assert(result.errors.some(error => error.code === 'path_not_exact'), '重复路径未报 path_not_exact');
+          assert(result.errors.some(error => error.code === 'blocked_path_step'
+            && error.step === 4
+            && error.vehicleId === 3
+            && error.blockerIds.includes(1)), '重复点击误删车辆后丢失了后续 blocker');
+        });
+
+        test('压力队列前方车辆引用不存在时不得视为已解除', () => {
+          const input = makePressureInput({
+            vehicles: makePressureInput().vehicles.map(vehicle => (
+              vehicle.id === 1 ? { ...vehicle, frontVehicleIds: [99] } : vehicle
+            ))
+          });
+          const result = pressureCore.validateBaseInput(input);
+          const issue = result.errors.find(error => error.code === 'unknown_front_vehicle');
+          assert(issue, '缺失的前方车辆引用未报错');
+          equal(issue, {
+            category: 'input_error',
+            code: 'unknown_front_vehicle',
+            message: '车辆 #1 的前方车辆 #99 不存在',
+            vehicleId: 1,
+            frontVehicleId: 99
+          }, '缺失前方车辆问题细节错误');
+          assert(result.errors.some(error => error.code === 'blocked_path_step'
+            && error.vehicleId === 1
+            && error.blockerIds.includes(99)), '缺失的前方车辆被误当作已解除');
+          equal(JSON.parse(JSON.stringify(result.errors)), result.errors, '缺失前方车辆错误应可 JSON 保存');
         });
 
         test('压力队列路径严格拒绝缺失、重复、未知和额外车辆', () => {
@@ -530,12 +647,37 @@
             && error.blockerIds.includes(1)), '未知项错误删除了未点击 blocker');
         });
 
+        test('压力队列路径元素必须是稠密的安全非负整数', () => {
+          const cases = [10n, Symbol('vehicle'), { id: 2 }, Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5];
+          cases.forEach((invalidValue, caseIndex) => {
+            const path = [1, invalidValue, 3, 4];
+            const result = pressureCore.validateBaseInput(makePressureInput({ path }));
+            const issue = result.errors.find(error => error.code === 'invalid_path_vehicle_id');
+            assert(issue && issue.step === 2 && issue.index === 1, `非法路径案例 ${caseIndex} 未报对应步骤`);
+            equal(Object.keys(issue).sort(), ['category', 'code', 'index', 'message', 'step'].sort(), `非法路径案例 ${caseIndex} 泄漏了原值`);
+            assert(!result.errors.some(error => error.code === 'unknown_path_vehicle'), `非法路径案例 ${caseIndex} 被误归类为未知车辆`);
+            JSON.stringify(result.errors);
+          });
+
+          const sparsePath = [1, 2, 3, 4];
+          delete sparsePath[1];
+          const sparseResult = pressureCore.validateBaseInput(makePressureInput({ path: sparsePath }));
+          const sparseIssue = sparseResult.errors.find(error => error.code === 'invalid_path_vehicle_id');
+          assert(sparseIssue && sparseIssue.step === 2 && sparseIssue.index === 1, '路径空洞未报对应步骤');
+          JSON.stringify(sparseResult.errors);
+
+          const nonArray = pressureCore.validateBaseInput(makePressureInput({ path: null }));
+          const nonArrayIssue = nonArray.errors.find(error => error.code === 'invalid_path_vehicle_id');
+          assert(nonArrayIssue && nonArrayIssue.step === 0 && nonArrayIssue.index === -1, '非数组路径未报容器级错误');
+          JSON.stringify(nonArray.errors);
+        });
+
         test('压力队列路径和阻挡检查支持车辆 id 0', () => {
           const input = makePressureInput({
             passengers: [1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
             vehicles: [
-              { id: 0, colorValue: 1, capacity: 4, frontVehicleIds: [] },
-              { id: 1, colorValue: 2, capacity: 10, frontVehicleIds: [0] }
+              { id: 0, colorValue: 1, capacity: 4, frontVehicleIds: [], backVehicleIds: [1] },
+              { id: 1, colorValue: 2, capacity: 10, frontVehicleIds: [0], backVehicleIds: [] }
             ],
             path: [0, 1]
           });
@@ -544,6 +686,38 @@
           assert(blocked.some(error => error.code === 'blocked_path_step'
             && error.vehicleId === 1
             && error.blockerIds.includes(0)), 'id 0 未作为 blocker 被识别');
+        });
+
+        test('压力队列乘客必须是稠密的安全非负整数数组', () => {
+          const validPassengers = makePressureInput().passengers;
+          const sparsePassengers = [...validPassengers];
+          delete sparsePassengers[3];
+          const cases = [
+            { label: '空洞', passengers: sparsePassengers, index: 3 },
+            { label: 'NaN', passengers: [Number.NaN, ...validPassengers.slice(1)], index: 0 },
+            { label: 'Infinity', passengers: [Number.POSITIVE_INFINITY, ...validPassengers.slice(1)], index: 0 },
+            { label: '对象', passengers: [{ value: 3 }, ...validPassengers.slice(1)], index: 0 },
+            { label: 'BigInt', passengers: [10n, ...validPassengers.slice(1)], index: 0 },
+            { label: '负数', passengers: [-1, ...validPassengers.slice(1)], index: 0 }
+          ];
+
+          cases.forEach(({ label, passengers, index }) => {
+            const result = pressureCore.validateBaseInput(makePressureInput({ passengers }));
+            const issue = result.errors.find(error => error.code === 'invalid_passenger_value');
+            assert(issue && issue.index === index, `${label}乘客未报对应 index 的 invalid_passenger_value`);
+            equal(Object.keys(issue).sort(), ['category', 'code', 'index', 'message'].sort(), `${label}乘客错误携带了非安全 detail`);
+            assert(result.passengerCounts.size === 0, `${label}乘客数组不应进入计数`);
+            assert(!result.errors.some(error => error.code === 'color_total_mismatch'), `${label}乘客触发了误导性颜色总量错误`);
+            assert(!result.errors.some(error => error.code === 'right_preview_too_short'), `${label}乘客用 length 触发或绕过了预告校验`);
+            JSON.stringify(result.errors);
+          });
+
+          const nonArray = pressureCore.validateBaseInput(makePressureInput({ passengers: null }));
+          const nonArrayIssue = nonArray.errors.find(error => error.code === 'invalid_passenger_value');
+          assert(nonArrayIssue && nonArrayIssue.index === -1, '非数组乘客队列未报带根索引的 invalid_passenger_value');
+          equal(Object.keys(nonArrayIssue).sort(), ['category', 'code', 'index', 'message'].sort(), '非数组乘客错误携带了非安全 detail');
+          assert(nonArray.passengerCounts.size === 0, '非数组乘客队列不应进入计数');
+          assert(!nonArray.errors.some(error => error.code === 'color_total_mismatch' || error.code === 'right_preview_too_short'), '非数组乘客队列触发了级联噪音');
         });
 
         test('压力队列颜色总量拒绝乘客少、乘客多和任一侧独有颜色', () => {
@@ -586,8 +760,8 @@
           const boundary = makePressureInput({
             passengers: Array(14).fill(1),
             vehicles: [
-              { id: 0, colorValue: 1, capacity: 10, frontVehicleIds: [] },
-              { id: 1, colorValue: 1, capacity: 4, frontVehicleIds: [] }
+              { id: 0, colorValue: 1, capacity: 10, frontVehicleIds: [], backVehicleIds: [] },
+              { id: 1, colorValue: 1, capacity: 4, frontVehicleIds: [], backVehicleIds: [] }
             ],
             path: [0, 1]
           });
@@ -613,7 +787,7 @@
           const input = makePressureInput({
             vehicles: [
               null,
-              { id: 1, colorValue: null, capacity: '4', frontVehicleIds: null }
+              { id: 1, colorValue: null, capacity: '4', frontVehicleIds: null, backVehicleIds: null }
             ],
             path: [1, 0]
           });
@@ -625,6 +799,42 @@
           assert(result.errors.some(error => error.code === 'invalid_vehicle_color_value'), '畸形车辆颜色未报明确输入错误');
           assert(result.errors.some(error => error.code === 'invalid_vehicle_capacity'), '畸形车辆座位未报明确输入错误');
           assert(result.errors.some(error => error.code === 'invalid_front_vehicle_ids'), '畸形前方列表未报明确输入错误');
+        });
+
+        test('压力队列车辆索引仅保留完整合法且 id 唯一的车辆', () => {
+          const sparseBack = [];
+          sparseBack.length = 1;
+          const validVehicle = {
+            id: 0,
+            colorValue: 1,
+            capacity: 14,
+            frontVehicleIds: [],
+            backVehicleIds: []
+          };
+          const result = pressureCore.validateBaseInput({
+            conveyorCapacity: 4,
+            passengers: Array(14).fill(1),
+            vehicles: [
+              validVehicle,
+              { id: 1, colorValue: null, capacity: 4, frontVehicleIds: [], backVehicleIds: [] },
+              { id: 2, colorValue: 1, capacity: '4', frontVehicleIds: [], backVehicleIds: [] },
+              { id: 3, colorValue: 1, capacity: 4, frontVehicleIds: [10n], backVehicleIds: [] },
+              { id: 4, colorValue: 1, capacity: 4, frontVehicleIds: [], backVehicleIds: sparseBack },
+              { id: 5, colorValue: 1, capacity: 4, frontVehicleIds: [], backVehicleIds: [] },
+              { id: 5, colorValue: 1, capacity: 4, frontVehicleIds: [], backVehicleIds: [] },
+              null
+            ],
+            path: [0]
+          });
+          equal(Array.from(result.vehiclesById.keys()), [0], '车辆索引混入了不完整或重复车辆');
+          assert(result.vehiclesById.get(0) === validVehicle, '车辆索引未保留唯一完整车辆');
+          assert(result.errors.some(error => error.code === 'invalid_vehicle_color_value'), '非法车辆颜色未报错');
+          assert(result.errors.some(error => error.code === 'invalid_vehicle_capacity'), '非法车辆座位未报错');
+          assert(result.errors.some(error => error.code === 'invalid_front_vehicle_ids'), '非法 front 列表未报错');
+          assert(result.errors.some(error => error.code === 'invalid_back_vehicle_ids'), '非法 back 列表未报错');
+          assert(result.errors.some(error => error.code === 'duplicate_vehicle_id'), '重复车辆 id 未报错');
+          assert(result.errors.some(error => error.code === 'invalid_vehicle'), '非对象车辆未报错');
+          JSON.stringify(result.errors);
         });
 
         test('压力队列适配器复用真实 CSV、乘客和点击解析器', () => {
