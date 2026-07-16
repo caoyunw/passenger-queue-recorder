@@ -2031,6 +2031,124 @@
           });
         });
 
+        test('压力队列结果拒绝伪装普通原型的 inherited toJSON 改写', () => {
+          const disguisedPrototype = Object.create(null);
+          Object.defineProperties(disguisedPrototype, {
+            constructor: {
+              value: Object,
+              writable: true,
+              configurable: true
+            },
+            toJSON: {
+              value() {
+                return { status: 'rewritten' };
+              },
+              writable: true,
+              configurable: true
+            }
+          });
+          const result = Object.assign(Object.create(disguisedPrototype), {
+            status: 'success',
+            proof: { preserved: true }
+          });
+          const state = {
+            ...core.createInitialState(),
+            pressureQueue: {
+              ...core.createInitialState().pressureQueue,
+              result
+            }
+          };
+
+          withStoredState(null, () => {
+            const saved = core.saveState(state);
+            const storedResult = saved
+              ? JSON.parse(localStorage.getItem(STORAGE_KEY)).pressureQueue.result
+              : null;
+            const restoredResult = saved ? core.loadState().pressureQueue.result : null;
+            equal(
+              { saved, storedResult, restoredResult },
+              { saved: false, storedResult: null, restoredResult: null },
+              'inherited toJSON 不应通过保存并改写 result'
+            );
+          });
+        });
+
+        test('压力队列结果拒绝嵌套 inherited 或 own toJSON', () => {
+          const nestedPrototype = Object.create(null);
+          Object.defineProperties(nestedPrototype, {
+            constructor: {
+              value: Object,
+              writable: true,
+              configurable: true
+            },
+            toJSON: {
+              value() {
+                return { rewritten: true };
+              },
+              writable: true,
+              configurable: true
+            }
+          });
+          const nestedInheritedToJson = Object.assign(Object.create(nestedPrototype), { preserved: true });
+          const invalidResults = [
+            {
+              label: '嵌套 inherited toJSON',
+              value: { status: 'success', proof: nestedInheritedToJson }
+            },
+            {
+              label: '嵌套 own toJSON',
+              value: { status: 'success', proof: { preserved: true, toJSON: null } }
+            }
+          ];
+
+          invalidResults.forEach(({ label, value }) => {
+            const state = {
+              ...core.createInitialState(),
+              pressureQueue: {
+                ...core.createInitialState().pressureQueue,
+                result: value
+              }
+            };
+            assert(core.normalizeLoadedStateForTest(state).pressureQueue.result === null, `${label} 迁移时应回退 null`);
+            withStoredState(null, () => {
+              equal(core.saveState(state), false, `${label} 不应保存`);
+              equal(localStorage.getItem(STORAGE_KEY), null, `${label} 不应写入存储`);
+            });
+          });
+        });
+
+        test('父窗口、应用 iframe 与 JSON literal 的嵌套结果均可稳定往返', () => {
+          const source = {
+            status: 'success',
+            proof: {
+              checks: [true, null, { name: 'cross-realm', values: [[1, 2], [3, 4]] }],
+              summary: { expanded: 12 }
+            }
+          };
+          const validResults = [
+            { label: '父窗口 literal', value: source },
+            { label: '应用 iframe JSON', value: appWindow.JSON.parse(JSON.stringify(source)) },
+            { label: '父窗口 JSON.parse', value: JSON.parse(JSON.stringify(source)) }
+          ];
+
+          validResults.forEach(({ label, value }) => {
+            const state = {
+              ...core.createInitialState(),
+              pressureQueue: {
+                ...core.createInitialState().pressureQueue,
+                result: value
+              },
+              activeStage: 'pressureQueue'
+            };
+            withStoredState(null, () => {
+              assert(core.saveState(state), `${label} 应保存成功`);
+              const storedState = JSON.parse(localStorage.getItem(STORAGE_KEY));
+              equal(storedState.pressureQueue.result, source, `${label} JSON 保存结果错误`);
+              equal(core.loadState().pressureQueue.result, source, `${label} 恢复结果错误`);
+            });
+          });
+        });
+
         test('压力队列结果拒绝特殊对象、循环、稀疏数组和非 JSON 值', () => {
           const dateResult = new Date('2026-07-16T00:00:00.000Z');
           dateResult.status = 'success';

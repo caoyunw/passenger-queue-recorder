@@ -4450,23 +4450,76 @@
         && pathSolve.errors.every(error => typeof error === 'string');
     }
 
-    function hasNativePrototypeConstructor(value, expectedConstructor) {
-      const prototype = Object.getPrototypeOf(value);
-      if (!prototype) return false;
-      const parentPrototype = Object.getPrototypeOf(prototype);
-      const hasExpectedPrototypeChain = expectedConstructor === Object
-        ? parentPrototype === null
-        : expectedConstructor === Array
-          && Array.isArray(prototype)
-          && parentPrototype
-          && Object.getPrototypeOf(parentPrototype) === null;
+    function haveMatchingPrototypeDescriptors(candidatePrototype, referencePrototype) {
+      const candidateKeys = Reflect.ownKeys(candidatePrototype);
+      const referenceKeys = Reflect.ownKeys(referencePrototype);
+      if (candidateKeys.length !== referenceKeys.length
+        || referenceKeys.some(key => !Object.prototype.hasOwnProperty.call(candidatePrototype, key))) {
+        return false;
+      }
+
+      return referenceKeys.every(key => {
+        const candidate = Object.getOwnPropertyDescriptor(candidatePrototype, key);
+        const reference = Object.getOwnPropertyDescriptor(referencePrototype, key);
+        if (!candidate
+          || candidate.enumerable !== reference.enumerable
+          || candidate.configurable !== reference.configurable) {
+          return false;
+        }
+
+        const candidateIsData = Object.prototype.hasOwnProperty.call(candidate, 'value');
+        const referenceIsData = Object.prototype.hasOwnProperty.call(reference, 'value');
+        if (candidateIsData !== referenceIsData) return false;
+        if (referenceIsData) {
+          if (candidate.writable !== reference.writable
+            || typeof candidate.value !== typeof reference.value) {
+            return false;
+          }
+          if (typeof reference.value === 'function') {
+            return Function.prototype.toString.call(candidate.value)
+              === Function.prototype.toString.call(reference.value);
+          }
+          if (reference.value === null || typeof reference.value !== 'object') {
+            return Object.is(candidate.value, reference.value);
+          }
+          return Object.prototype.toString.call(candidate.value)
+            === Object.prototype.toString.call(reference.value);
+        }
+
+        return ['get', 'set'].every(accessor => {
+          if (typeof candidate[accessor] !== typeof reference[accessor]) return false;
+          return typeof reference[accessor] !== 'function'
+            || Function.prototype.toString.call(candidate[accessor])
+              === Function.prototype.toString.call(reference[accessor]);
+        });
+      });
+    }
+
+    function hasSelfLinkedNativeConstructor(prototype, expectedConstructor) {
       const constructorDescriptor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
-      return Boolean(hasExpectedPrototypeChain
-        && constructorDescriptor
+      return Boolean(constructorDescriptor
         && Object.prototype.hasOwnProperty.call(constructorDescriptor, 'value')
         && typeof constructorDescriptor.value === 'function'
+        && constructorDescriptor.value.prototype === prototype
         && Function.prototype.toString.call(constructorDescriptor.value)
           === Function.prototype.toString.call(expectedConstructor));
+    }
+
+    function isBaselineObjectPrototype(prototype) {
+      return Boolean(prototype
+        && Object.getPrototypeOf(prototype) === null
+        && haveMatchingPrototypeDescriptors(prototype, Object.prototype)
+        && hasSelfLinkedNativeConstructor(prototype, Object));
+    }
+
+    function hasBaselinePrototype(value, expectedConstructor) {
+      const prototype = Object.getPrototypeOf(value);
+      if (expectedConstructor === Object) return isBaselineObjectPrototype(prototype);
+      return expectedConstructor === Array
+        && Array.isArray(prototype)
+        && isBaselineObjectPrototype(Object.getPrototypeOf(prototype))
+        && haveMatchingPrototypeDescriptors(prototype, Array.prototype)
+        && hasSelfLinkedNativeConstructor(prototype, Array);
     }
 
     function isJsonSafeValue(value, ancestors = new Set()) {
@@ -4477,10 +4530,11 @@
 
       let tracked = false;
       try {
+        if ('toJSON' in value) return false;
         const isArray = Array.isArray(value);
         if (isArray) {
-          if (!hasNativePrototypeConstructor(value, Array) || !isDenseArray(value)) return false;
-        } else if (!hasNativePrototypeConstructor(value, Object)) {
+          if (!hasBaselinePrototype(value, Array) || !isDenseArray(value)) return false;
+        } else if (!hasBaselinePrototype(value, Object)) {
           return false;
         }
         if (ancestors.has(value)) return false;
@@ -4511,7 +4565,7 @@
 
       try {
         const statusDescriptor = Object.getOwnPropertyDescriptor(result, 'status');
-        return hasNativePrototypeConstructor(result, Object)
+        return hasBaselinePrototype(result, Object)
           && Boolean(statusDescriptor
             && Object.prototype.hasOwnProperty.call(statusDescriptor, 'value')
             && typeof statusDescriptor.value === 'string')
