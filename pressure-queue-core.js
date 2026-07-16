@@ -638,6 +638,290 @@
     };
   }
 
+  function cloneCompilerStrength(value) {
+    if (value === null) return null;
+    if (!isPlainJsonObject(value)) return INVALID_JSON_DETAIL;
+
+    let keys;
+    try {
+      keys = Reflect.ownKeys(value);
+    } catch {
+      return INVALID_JSON_DETAIL;
+    }
+    if (keys.some(key => typeof key !== 'string' || !STRENGTH_KEYS.has(key))) {
+      return INVALID_JSON_DETAIL;
+    }
+
+    const copy = {};
+    for (const key of keys) {
+      const property = readOwnDataValue(value, key);
+      if (!property.present) return INVALID_JSON_DETAIL;
+      copy[key] = property.value;
+    }
+    return copy;
+  }
+
+  function readCompilerAnnotation(value) {
+    if (!isPlainJsonObject(value)) return null;
+
+    let keys;
+    try {
+      keys = Reflect.ownKeys(value);
+    } catch {
+      return null;
+    }
+    if (keys.length !== ANNOTATION_KEYS.length
+      || keys.some(key => typeof key !== 'string' || !ANNOTATION_KEY_SET.has(key))) {
+      return null;
+    }
+
+    const annotation = {};
+    for (const key of ANNOTATION_KEYS) {
+      const property = readOwnDataValue(value, key);
+      if (!property.present) return null;
+      annotation[key] = property.value;
+    }
+    if (!isNonNegativeInteger(annotation.vehicleId)) return null;
+
+    annotation.initialOccupy = cloneCompilerStrength(annotation.initialOccupy);
+    annotation.laterOccupy = cloneCompilerStrength(annotation.laterOccupy);
+    annotation.rightPreview = cloneCompilerStrength(annotation.rightPreview);
+    return annotation;
+  }
+
+  function mergeGlobalColorConstraint(groups, item, conflictCode, errors) {
+    const existing = groups.get(item.colorValue);
+    if (!existing) {
+      const group = {
+        vehicleId: item.vehicleId,
+        colorValue: item.colorValue,
+        count: item.count,
+        vehicleIds: [item.vehicleId]
+      };
+      if (Object.prototype.hasOwnProperty.call(item, 'duration')) {
+        group.duration = item.duration;
+      }
+      groups.set(item.colorValue, group);
+      return;
+    }
+
+    const durationMatches = !Object.prototype.hasOwnProperty.call(item, 'duration')
+      || existing.duration === item.duration;
+    if (existing.count !== item.count || !durationMatches) {
+      errors.push(createIssue(
+        'constraint_conflict',
+        conflictCode,
+        `Color ${String(item.colorValue)} has conflicting global constraint labels`,
+        {
+          vehicleId: item.vehicleId,
+          firstVehicleId: existing.vehicleId,
+          colorValue: item.colorValue
+        }
+      ));
+      return;
+    }
+
+    existing.vehicleIds.push(item.vehicleId);
+  }
+
+  function compileConstraints(input) {
+    let base;
+    try {
+      base = validateBaseInput(input);
+    } catch {
+      base = validateBaseInput(null);
+    }
+
+    const errors = base.errors.map(error => cloneJsonSafeDetail(error));
+    const pathProperty = readOwnDataValue(input, 'path');
+    const pathInspection = inspectDenseNonNegativeIntegerArray(pathProperty.value);
+    const safePath = pathInspection.values.filter(isNonNegativeInteger);
+    const annotationProperty = readOwnDataValue(input, 'annotations');
+    const compilerAnnotations = readDenseArrayEntries(annotationProperty.value)
+      .map(readCompilerAnnotation)
+      .filter(annotation => annotation !== null);
+    const syncableAnnotations = compilerAnnotations.filter(isAnnotation);
+    const annotations = syncAnnotations(safePath, syncableAnnotations);
+    const compilerAnnotationById = new Map(
+      compilerAnnotations.map(annotation => [annotation.vehicleId, annotation])
+    );
+    const annotationsToCompile = safePath.map(vehicleId => (
+      compilerAnnotationById.get(vehicleId) || createAnnotation(vehicleId)
+    ));
+    const stepByIdMap = new Map();
+    safePath.forEach((vehicleId, index) => stepByIdMap.set(vehicleId, index + 1));
+
+    const capacityProperty = readOwnDataValue(input, 'conveyorCapacity');
+    const conveyorCapacity = capacityProperty.value;
+    const pressureLinks = [];
+    const initialGroups = new Map();
+    const laterOccupy = [];
+    const previewGroups = new Map();
+
+    annotationsToCompile.forEach(annotation => {
+      const vehicle = base.vehiclesById.get(annotation.vehicleId);
+      if (!vehicle) return;
+
+      const vehicleId = readOwnDataValue(vehicle, 'id').value;
+      const colorValue = readOwnDataValue(vehicle, 'colorValue').value;
+      const vehicleCapacity = readOwnDataValue(vehicle, 'capacity').value;
+      const clickStep = stepByIdMap.get(vehicleId);
+
+      if (annotation.settlementTarget === 'partial'
+        && (!Number.isSafeInteger(annotation.remainingSeats)
+          || annotation.remainingSeats < 1
+          || annotation.remainingSeats > vehicleCapacity)) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'invalid_partial_remaining',
+          `Vehicle #${vehicleId} has invalid remaining seats for partial settlement`,
+          { vehicleId, vehicleCapacity }
+        ));
+      }
+
+      if (annotation.pressureSlot === true) {
+        if (annotation.settlementTarget !== 'empty'
+          && annotation.settlementTarget !== 'partial') {
+          errors.push(createIssue(
+            'constraint_conflict',
+            'pressure_requires_waiting_target',
+            `Vehicle #${vehicleId} pressure slot requires an empty or partial target`,
+            { vehicleId }
+          ));
+        }
+
+        const triggerVehicleId = annotation.releaseTriggerVehicleId;
+        const triggerStep = stepByIdMap.get(triggerVehicleId);
+        if (!isNonNegativeInteger(triggerVehicleId)
+          || !base.vehiclesById.has(triggerVehicleId)
+          || !Number.isSafeInteger(triggerStep)
+          || triggerStep <= clickStep) {
+          errors.push(createIssue(
+            'constraint_conflict',
+            'invalid_release_trigger',
+            `Vehicle #${vehicleId} release trigger must be a later path vehicle`,
+            { vehicleId }
+          ));
+        } else {
+          pressureLinks.push({ vehicleId, triggerVehicleId });
+        }
+      }
+
+      if (annotation.pathUnlock === true) {
+        const unlocksLaterVehicle = safePath.some((candidateId, index) => {
+          if (index + 1 <= clickStep) return false;
+          const candidate = base.vehiclesById.get(candidateId);
+          if (!candidate) return false;
+          const frontProperty = readOwnDataValue(candidate, 'frontVehicleIds');
+          const frontInspection = inspectDenseNonNegativeIntegerArray(frontProperty.value);
+          return frontInspection.valid && frontInspection.values.includes(vehicleId);
+        });
+        if (!unlocksLaterVehicle) {
+          errors.push(createIssue(
+            'constraint_conflict',
+            'path_unlock_has_no_target',
+            `Vehicle #${vehicleId} does not unlock a later path vehicle`,
+            { vehicleId }
+          ));
+        }
+      }
+
+      if (annotation.initialOccupy !== null) {
+        const strength = resolveOccupyStrength(annotation.initialOccupy, conveyorCapacity);
+        if (!strength
+          || strength.count < 1
+          || strength.count > conveyorCapacity
+          || !isPositiveInteger(strength.duration)
+          || strength.duration > safePath.length) {
+          errors.push(createIssue(
+            'constraint_conflict',
+            'invalid_initial_occupy',
+            `Vehicle #${vehicleId} has invalid initial occupy parameters`,
+            { vehicleId }
+          ));
+        } else {
+          mergeGlobalColorConstraint(
+            initialGroups,
+            { vehicleId, colorValue, count: strength.count, duration: strength.duration },
+            'initial_occupy_color_conflict',
+            errors
+          );
+        }
+      }
+
+      if (annotation.laterOccupy !== null) {
+        const strength = resolveOccupyStrength(annotation.laterOccupy, conveyorCapacity);
+        if (!strength
+          || strength.count < 1
+          || strength.count > conveyorCapacity
+          || !isPositiveInteger(strength.duration)
+          || clickStep <= strength.duration) {
+          errors.push(createIssue(
+            'constraint_conflict',
+            'later_occupy_window_too_short',
+            `Vehicle #${vehicleId} has no complete later occupy window before its click`,
+            { vehicleId, clickStep }
+          ));
+        } else {
+          laterOccupy.push({
+            vehicleId,
+            colorValue,
+            clickStep,
+            count: strength.count,
+            duration: strength.duration
+          });
+        }
+      }
+
+      if (annotation.rightPreview !== null) {
+        const count = resolvePreviewStrength(annotation.rightPreview);
+        if (!Number.isSafeInteger(count) || count < 0 || count > 10) {
+          errors.push(createIssue(
+            'constraint_conflict',
+            'invalid_preview_count',
+            `Vehicle #${vehicleId} has an invalid right preview count`,
+            { vehicleId }
+          ));
+        } else {
+          mergeGlobalColorConstraint(
+            previewGroups,
+            { vehicleId, colorValue, count },
+            'preview_color_conflict',
+            errors
+          );
+        }
+      }
+    });
+
+    const initialOccupy = [...initialGroups.values()];
+    const rightPreview = [...previewGroups.values()];
+    if (initialOccupy.reduce((sum, item) => sum + item.count, 0) > conveyorCapacity) {
+      errors.push(createIssue(
+        'constraint_conflict',
+        'initial_occupy_sum_exceeds_capacity',
+        'Initial occupy counts across colors exceed conveyor capacity',
+        { conveyorCapacity }
+      ));
+    }
+    if (rightPreview.reduce((sum, item) => sum + item.count, 0) > 10) {
+      errors.push(createIssue(
+        'constraint_conflict',
+        'preview_sum_exceeds_ten',
+        'Right preview counts across colors exceed ten'
+      ));
+    }
+
+    return {
+      annotations,
+      pressureLinks,
+      initialOccupy,
+      laterOccupy,
+      rightPreview,
+      stepById: Object.fromEntries(stepByIdMap),
+      errors
+    };
+  }
+
   global.PressureQueueCore = Object.freeze({
     SETTLEMENT_TARGETS,
     STRENGTH_MODES,
@@ -651,6 +935,7 @@
     syncAnnotations,
     countValues,
     createIssue,
-    validateBaseInput
+    validateBaseInput,
+    compileConstraints
   });
 }(window));
