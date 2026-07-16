@@ -374,14 +374,14 @@
 
   function validateBaseInput(input) {
     const errors = [];
-    const vehicles = readDenseArrayEntries(input && input.vehicles);
-    const passengerInput = input && input.passengers;
+    const vehicles = readDenseArrayEntries(readOwnDataValue(input, 'vehicles').value);
+    const passengerInput = readOwnDataValue(input, 'passengers').value;
     const passengerInspection = inspectDenseNonNegativeIntegerArray(passengerInput);
     const passengers = passengerInspection.valid ? passengerInspection.values : [];
-    const pathInput = input && input.path;
+    const pathInput = readOwnDataValue(input, 'path').value;
     const pathInspection = inspectDenseNonNegativeIntegerArray(pathInput);
     const path = pathInspection.values;
-    const conveyorCapacity = input && input.conveyorCapacity;
+    const conveyorCapacity = readOwnDataValue(input, 'conveyorCapacity').value;
     const hasValidConveyorCapacity = isPositiveInteger(conveyorCapacity);
     const passengerCounts = countValues(passengers);
     const seatCounts = new Map();
@@ -752,7 +752,9 @@
     safePath.forEach((vehicleId, index) => stepByIdMap.set(vehicleId, index + 1));
 
     const capacityProperty = readOwnDataValue(input, 'conveyorCapacity');
-    const conveyorCapacity = capacityProperty.value;
+    const safeCapacity = isPositiveInteger(capacityProperty.value)
+      ? capacityProperty.value
+      : null;
     const pressureLinks = [];
     const initialGroups = new Map();
     const laterOccupy = [];
@@ -826,11 +828,11 @@
         }
       }
 
-      if (annotation.initialOccupy !== null) {
-        const strength = resolveOccupyStrength(annotation.initialOccupy, conveyorCapacity);
+      if (annotation.initialOccupy !== null && safeCapacity !== null) {
+        const strength = resolveOccupyStrength(annotation.initialOccupy, safeCapacity);
         if (!strength
           || strength.count < 1
-          || strength.count > conveyorCapacity
+          || strength.count > safeCapacity
           || !isPositiveInteger(strength.duration)
           || strength.duration > safePath.length) {
           errors.push(createIssue(
@@ -849,11 +851,11 @@
         }
       }
 
-      if (annotation.laterOccupy !== null) {
-        const strength = resolveOccupyStrength(annotation.laterOccupy, conveyorCapacity);
+      if (annotation.laterOccupy !== null && safeCapacity !== null) {
+        const strength = resolveOccupyStrength(annotation.laterOccupy, safeCapacity);
         if (!strength
           || strength.count < 1
-          || strength.count > conveyorCapacity
+          || strength.count > safeCapacity
           || !isPositiveInteger(strength.duration)
           || clickStep <= strength.duration) {
           errors.push(createIssue(
@@ -895,12 +897,13 @@
 
     const initialOccupy = [...initialGroups.values()];
     const rightPreview = [...previewGroups.values()];
-    if (initialOccupy.reduce((sum, item) => sum + item.count, 0) > conveyorCapacity) {
+    if (safeCapacity !== null
+      && initialOccupy.reduce((sum, item) => sum + item.count, 0) > safeCapacity) {
       errors.push(createIssue(
         'constraint_conflict',
         'initial_occupy_sum_exceeds_capacity',
         'Initial occupy counts across colors exceed conveyor capacity',
-        { conveyorCapacity }
+        { conveyorCapacity: safeCapacity }
       ));
     }
     if (rightPreview.reduce((sum, item) => sum + item.count, 0) > 10) {

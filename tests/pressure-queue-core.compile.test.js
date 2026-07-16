@@ -329,6 +329,126 @@ test('passes through every base error and does not throw on malformed data', () 
   });
 });
 
+test('does not throw when conveyor capacity is a Symbol', () => {
+  const input = {
+    conveyorCapacity: Symbol('bad'),
+    passengers: [],
+    vehicles: [],
+    path: [],
+    annotations: []
+  };
+  let compiled;
+  assert.doesNotThrow(() => {
+    compiled = core.compileConstraints(input);
+  });
+  assert(compiled.errors.some(error => error.code === 'invalid_conveyor_capacity'));
+  assert.doesNotThrow(() => JSON.stringify(compiled));
+});
+
+test('rejects hostile conveyor capacities without adding secondary constraint errors', () => {
+  const capacities = [1n, {}, NaN, Infinity, -1, '4'];
+  capacities.forEach(conveyorCapacity => {
+    const input = {
+      conveyorCapacity,
+      passengers: [],
+      vehicles: [],
+      path: [],
+      annotations: []
+    };
+    let compiled;
+    assert.doesNotThrow(() => {
+      compiled = core.compileConstraints(input);
+    });
+    assert(compiled.errors.some(error => (
+      error.category === 'input_error' && error.code === 'invalid_conveyor_capacity'
+    )));
+    assert.equal(constraintCodes(compiled).length, 0);
+    assert.doesNotThrow(() => JSON.stringify(compiled));
+  });
+});
+
+test('filters hostile path values out of annotations and step mappings', () => {
+  const sparsePath = [1, , 2];
+  const paths = [
+    [1, Symbol('bad'), 2n, {}, 3],
+    sparsePath,
+    Symbol('bad'),
+    2n,
+    {},
+    '1,2',
+    null
+  ];
+  paths.forEach(pathValue => {
+    const input = {
+      conveyorCapacity: 4,
+      passengers: [],
+      vehicles: [],
+      path: pathValue,
+      annotations: []
+    };
+    let compiled;
+    assert.doesNotThrow(() => {
+      compiled = core.compileConstraints(input);
+    });
+    assert.doesNotThrow(() => JSON.stringify(compiled));
+    assert(compiled.errors.some(error => error.category === 'input_error'));
+    assert(compiled.annotations.every(annotation => Number.isSafeInteger(annotation.vehicleId)
+      && annotation.vehicleId >= 0));
+    assert(Reflect.ownKeys(compiled.stepById).every(key => typeof key === 'string'));
+    assert(Object.values(compiled.stepById).every(Number.isSafeInteger));
+    [compiled.pressureLinks, compiled.initialOccupy, compiled.laterOccupy, compiled.rightPreview]
+      .forEach(value => assert(Array.isArray(value)));
+  });
+
+  const filtered = core.compileConstraints({
+    conveyorCapacity: 4,
+    passengers: [],
+    vehicles: [],
+    path: [1, Symbol('bad'), 3],
+    annotations: []
+  });
+  assert.deepEqual(json(filtered.annotations).map(annotation => annotation.vehicleId), [1, 3]);
+  assert.deepEqual(json(filtered.stepById), { 1: 1, 3: 2 });
+});
+
+test('does not execute top-level accessors and tolerates malformed annotation and vehicle fields', () => {
+  const getterInput = {};
+  const getterCalls = [];
+  ['conveyorCapacity', 'passengers', 'vehicles', 'path', 'annotations'].forEach(key => {
+    Object.defineProperty(getterInput, key, {
+      enumerable: true,
+      get() {
+        getterCalls.push(key);
+        throw new Error(`unsafe ${key} getter executed`);
+      }
+    });
+  });
+
+  let getterCompiled;
+  assert.doesNotThrow(() => {
+    getterCompiled = core.compileConstraints(getterInput);
+  });
+  assert.deepEqual(getterCalls, []);
+  assert.doesNotThrow(() => JSON.stringify(getterCompiled));
+
+  const malformedValues = [Symbol('bad'), 2n, {}, 'bad', [null, , {}]];
+  malformedValues.forEach(value => {
+    const malformed = {
+      conveyorCapacity: 4,
+      passengers: [],
+      vehicles: value,
+      path: [],
+      annotations: value
+    };
+    let compiled;
+    assert.doesNotThrow(() => {
+      compiled = core.compileConstraints(malformed);
+    });
+    assert.doesNotThrow(() => JSON.stringify(compiled));
+    assert(compiled.errors.some(error => error.category === 'input_error'));
+  });
+});
+
 test('returns JSON-safe detached arrays and objects in both mutation directions', () => {
   const input = makeAnnotatedInput({
     1: {
