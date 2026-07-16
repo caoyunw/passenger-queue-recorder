@@ -276,6 +276,16 @@
           assert(Object.isFrozen(pressureCore.PREVIEW_PRESETS), '预告预设未冻结');
         });
 
+        test('压力队列核心脚本节点位于现有内联应用脚本之前', () => {
+          const scripts = [...appDocument.scripts];
+          const pressureCoreIndex = scripts.findIndex(script => script.getAttribute('src') === 'pressure-queue-core.js');
+          const applicationIndex = scripts.findIndex(script => !script.getAttribute('src')
+            && script.textContent.includes("const STORAGE_KEY = 'passenger-queue-recorder-state-v5'"));
+          assert(pressureCoreIndex >= 0, '未找到 pressure-queue-core.js 脚本节点');
+          assert(applicationIndex >= 0, '未找到现有内联应用脚本节点');
+          assert(pressureCoreIndex < applicationIndex, '压力队列核心脚本未位于内联应用脚本之前');
+        });
+
         test('压力队列默认车辆标注包含全部空标签', () => {
           assert(pressureCore, 'PressureQueueCore 不存在');
           equal(pressureCore.createAnnotation(35), {
@@ -315,13 +325,60 @@
           assert(pressureCore.isAnnotation({ ...partial, remainingSeats: 2, releaseTriggerVehicleId: 0 }), '合法释放车辆 ID 应通过校验');
         });
 
+        test('压力队列标注严格校验右侧预告范围和 duration 结构', () => {
+          assert(pressureCore, 'PressureQueueCore 不存在');
+          const annotation = pressureCore.createAnnotation(7);
+          assert(pressureCore.isAnnotation({
+            ...annotation,
+            rightPreview: { mode: 'custom', count: 10, duration: null }
+          }), '预告上界和空 duration 应合法');
+          assert(!pressureCore.isAnnotation({
+            ...annotation,
+            rightPreview: { mode: 'custom', count: 11 }
+          }), '超过 10 人的预告不应通过标注校验');
+          assert(!pressureCore.isAnnotation({
+            ...annotation,
+            rightPreview: { mode: 'custom', count: 4, duration: 2 }
+          }), '预告不应包含非空 duration');
+          assert(pressureCore.isAnnotation({
+            ...annotation,
+            initialOccupy: { mode: 'custom', count: 11, duration: 2 },
+            laterOccupy: { mode: 'custom', count: 3, duration: 1 }
+          }), '占带人数范围应继续由占带解析器结合容量校验');
+          equal(pressureCore.resolvePreviewStrength({ mode: 'custom', count: 4, duration: 2 }), null, '预告解析器应拒绝非空 duration');
+        });
+
+        test('压力队列标注拒绝未知字段且同步非法标注时回落到默认值', () => {
+          assert(pressureCore, 'PressureQueueCore 不存在');
+          const metadata = { x: 1 };
+          const invalidSchema = {
+            ...pressureCore.createAnnotation(7),
+            rightPreview: { mode: 'custom', count: 4 },
+            metadata
+          };
+          const invalidPreview = {
+            ...pressureCore.createAnnotation(8),
+            rightPreview: { mode: 'custom', count: 11 }
+          };
+          assert(!pressureCore.isAnnotation(invalidSchema), '包含未知字段的标注不应合法');
+          assert(!pressureCore.isAnnotation(invalidPreview), '包含越界预告的标注不应合法');
+
+          const synced = pressureCore.syncAnnotations([7, 8], [invalidSchema, invalidPreview]);
+          equal(synced, [pressureCore.createAnnotation(7), pressureCore.createAnnotation(8)], '非法标注同步时未回落到默认值');
+          assert(!Object.prototype.hasOwnProperty.call(synced[0], 'metadata'), '同步结果保留了未知字段');
+          synced[0].settlementTarget = 'instant';
+          equal(metadata, { x: 1 }, '同步结果泄漏了未知嵌套字段引用');
+        });
+
         test('压力队列同步标注按车辆顺序保留、补全和移除且不泄漏引用', () => {
           assert(pressureCore, 'PressureQueueCore 不存在');
           const retained = {
             ...pressureCore.createAnnotation(7),
             settlementTarget: 'instant',
             pressureSlot: true,
-            initialOccupy: { mode: 'low' }
+            initialOccupy: { mode: 'low' },
+            laterOccupy: { mode: 'custom', count: 2, duration: 3 },
+            rightPreview: { mode: 'custom', count: 4 }
           };
           const removed = { ...pressureCore.createAnnotation(5), pathUnlock: true };
           const existing = [retained, removed];
@@ -330,11 +387,19 @@
           equal(synced, [pressureCore.createAnnotation(9), retained], '同步标注未正确保留、补全或移除');
           assert(synced[1] !== retained, '同步结果泄漏了已有标注对象引用');
           assert(synced[1].initialOccupy !== retained.initialOccupy, '同步结果泄漏了嵌套强度对象引用');
+          assert(synced[1].laterOccupy !== retained.laterOccupy, '同步结果泄漏了后续占带对象引用');
+          assert(synced[1].rightPreview !== retained.rightPreview, '同步结果泄漏了右侧预告对象引用');
           synced[1].initialOccupy.mode = 'high';
+          synced[1].laterOccupy.count = 1;
+          synced[1].rightPreview.count = 2;
           equal(retained.initialOccupy, { mode: 'low' }, '修改同步结果影响了调用方已有标注');
+          equal(retained.laterOccupy, { mode: 'custom', count: 2, duration: 3 }, '修改同步结果影响了已有后续占带');
+          equal(retained.rightPreview, { mode: 'custom', count: 4 }, '修改同步结果影响了已有右侧预告');
           const secondSync = pressureCore.syncAnnotations([7], synced);
           assert(secondSync[0] !== synced[1], '重复同步泄漏了上次返回的标注对象引用');
           assert(secondSync[0].initialOccupy !== synced[1].initialOccupy, '重复同步泄漏了上次返回的嵌套引用');
+          assert(secondSync[0].laterOccupy !== synced[1].laterOccupy, '重复同步泄漏了上次返回的后续占带引用');
+          assert(secondSync[0].rightPreview !== synced[1].rightPreview, '重复同步泄漏了上次返回的右侧预告引用');
         });
 
         test('压力队列占带低中高强度按容量向上取整并使用预设持续步数', () => {

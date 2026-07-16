@@ -10,6 +10,18 @@
   });
   const PREVIEW_PRESETS = Object.freeze({ low: 2, medium: 6, high: 10 });
   const STRENGTH_KEYS = new Set(['mode', 'count', 'duration']);
+  const ANNOTATION_KEYS = Object.freeze([
+    'vehicleId',
+    'settlementTarget',
+    'remainingSeats',
+    'pressureSlot',
+    'pathUnlock',
+    'initialOccupy',
+    'laterOccupy',
+    'rightPreview',
+    'releaseTriggerVehicleId'
+  ]);
+  const ANNOTATION_KEY_SET = new Set(ANNOTATION_KEYS);
 
   function isNonNegativeInteger(value) {
     return Number.isSafeInteger(value) && value >= 0;
@@ -55,21 +67,16 @@
   }
 
   function isPreviewStrength(value) {
-    return isStrength(value) && value !== null;
+    return isStrength(value)
+      && value !== null
+      && (value.duration === undefined || value.duration === null)
+      && (value.mode !== 'custom' || value.count <= 10);
   }
 
   function hasAnnotationFields(value) {
-    return [
-      'vehicleId',
-      'settlementTarget',
-      'remainingSeats',
-      'pressureSlot',
-      'pathUnlock',
-      'initialOccupy',
-      'laterOccupy',
-      'rightPreview',
-      'releaseTriggerVehicleId'
-    ].every(key => Object.prototype.hasOwnProperty.call(value, key));
+    const keys = Reflect.ownKeys(value);
+    return keys.length === ANNOTATION_KEYS.length
+      && keys.every(key => typeof key === 'string' && ANNOTATION_KEY_SET.has(key));
   }
 
   function isAnnotation(value) {
@@ -107,7 +114,7 @@
   function resolvePreviewStrength(strength) {
     if (!isPreviewStrength(strength)) return null;
     if (strength.mode !== 'custom') return PREVIEW_PRESETS[strength.mode];
-    return strength.count <= 10 ? strength.count : null;
+    return strength.count;
   }
 
   function cloneStrength(strength) {
@@ -116,10 +123,15 @@
 
   function cloneAnnotation(annotation) {
     return {
-      ...annotation,
+      vehicleId: annotation.vehicleId,
+      settlementTarget: annotation.settlementTarget,
+      remainingSeats: annotation.remainingSeats,
+      pressureSlot: annotation.pressureSlot,
+      pathUnlock: annotation.pathUnlock,
       initialOccupy: cloneStrength(annotation.initialOccupy),
       laterOccupy: cloneStrength(annotation.laterOccupy),
-      rightPreview: cloneStrength(annotation.rightPreview)
+      rightPreview: cloneStrength(annotation.rightPreview),
+      releaseTriggerVehicleId: annotation.releaseTriggerVehicleId
     };
   }
 
