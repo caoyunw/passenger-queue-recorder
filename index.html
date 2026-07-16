@@ -4450,6 +4450,99 @@
         && pathSolve.errors.every(error => typeof error === 'string');
     }
 
+    function hasNativePrototypeConstructor(value, expectedConstructor) {
+      const prototype = Object.getPrototypeOf(value);
+      if (!prototype) return false;
+      const parentPrototype = Object.getPrototypeOf(prototype);
+      const hasExpectedPrototypeChain = expectedConstructor === Object
+        ? parentPrototype === null
+        : expectedConstructor === Array
+          && Array.isArray(prototype)
+          && parentPrototype
+          && Object.getPrototypeOf(parentPrototype) === null;
+      const constructorDescriptor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
+      return Boolean(hasExpectedPrototypeChain
+        && constructorDescriptor
+        && Object.prototype.hasOwnProperty.call(constructorDescriptor, 'value')
+        && typeof constructorDescriptor.value === 'function'
+        && Function.prototype.toString.call(constructorDescriptor.value)
+          === Function.prototype.toString.call(expectedConstructor));
+    }
+
+    function isJsonSafeValue(value, ancestors = new Set()) {
+      if (value === null) return true;
+      if (typeof value === 'boolean' || typeof value === 'string') return true;
+      if (typeof value === 'number') return Number.isFinite(value);
+      if (typeof value !== 'object') return false;
+
+      let tracked = false;
+      try {
+        const isArray = Array.isArray(value);
+        if (isArray) {
+          if (!hasNativePrototypeConstructor(value, Array) || !isDenseArray(value)) return false;
+        } else if (!hasNativePrototypeConstructor(value, Object)) {
+          return false;
+        }
+        if (ancestors.has(value)) return false;
+        ancestors.add(value);
+        tracked = true;
+
+        const keys = isArray
+          ? Array.from({ length: value.length }, (_, index) => String(index))
+          : Reflect.ownKeys(value);
+        if (!isArray && keys.some(key => typeof key !== 'string')) return false;
+        return keys.every(key => {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          return Boolean(descriptor
+            && descriptor.enumerable
+            && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+            && isJsonSafeValue(descriptor.value, ancestors));
+        });
+      } catch {
+        return false;
+      } finally {
+        if (tracked) ancestors.delete(value);
+      }
+    }
+
+    function isValidPressureQueueResult(result) {
+      if (result === null) return true;
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return false;
+
+      try {
+        const statusDescriptor = Object.getOwnPropertyDescriptor(result, 'status');
+        return hasNativePrototypeConstructor(result, Object)
+          && Boolean(statusDescriptor
+            && Object.prototype.hasOwnProperty.call(statusDescriptor, 'value')
+            && typeof statusDescriptor.value === 'string')
+          && isJsonSafeValue(result);
+      } catch {
+        return false;
+      }
+    }
+
+    function cloneJsonSafeValue(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+
+    function clonePressureQueueStrength(strength) {
+      return strength === null ? null : { ...strength };
+    }
+
+    function clonePressureQueueAnnotation(annotation) {
+      return {
+        vehicleId: annotation.vehicleId,
+        settlementTarget: annotation.settlementTarget,
+        remainingSeats: annotation.remainingSeats,
+        pressureSlot: annotation.pressureSlot,
+        pathUnlock: annotation.pathUnlock,
+        initialOccupy: clonePressureQueueStrength(annotation.initialOccupy),
+        laterOccupy: clonePressureQueueStrength(annotation.laterOccupy),
+        rightPreview: clonePressureQueueStrength(annotation.rightPreview),
+        releaseTriggerVehicleId: annotation.releaseTriggerVehicleId
+      };
+    }
+
     function isValidPressureQueue(pressureQueue) {
       return hasExactKeys(pressureQueue, PRESSURE_QUEUE_KEYS)
         && typeof pressureQueue.levelName === 'string'
@@ -4461,8 +4554,7 @@
         && typeof pressureQueue.seed === 'string'
         && isDenseArray(pressureQueue.annotations)
         && pressureQueue.annotations.every(window.PressureQueueCore.isAnnotation)
-        && (pressureQueue.result === null
-          || (typeof pressureQueue.result === 'object' && typeof pressureQueue.result.status === 'string'))
+        && isValidPressureQueueResult(pressureQueue.result)
         && isDenseArray(pressureQueue.errors)
         && pressureQueue.errors.every(error => typeof error === 'string');
     }
@@ -4568,11 +4660,12 @@
         }
       });
       normalized.annotations = hasOwn('annotations') && Array.isArray(value.annotations)
-        ? value.annotations.filter(window.PressureQueueCore.isAnnotation)
+        ? value.annotations
+          .filter(window.PressureQueueCore.isAnnotation)
+          .map(clonePressureQueueAnnotation)
         : [];
-      normalized.result = hasOwn('result') && (value.result === null
-        || (typeof value.result === 'object' && value.result && typeof value.result.status === 'string'))
-        ? value.result
+      normalized.result = hasOwn('result') && isValidPressureQueueResult(value.result)
+        ? value.result === null ? null : cloneJsonSafeValue(value.result)
         : null;
       normalized.errors = hasOwn('errors') && Array.isArray(value.errors)
         ? value.errors.filter(error => typeof error === 'string')

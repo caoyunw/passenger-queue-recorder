@@ -2007,6 +2007,182 @@
           });
         });
 
+        test('压力队列结果拒绝带 status 的数组以避免 JSON 往返丢失', () => {
+          const arrayResult = [];
+          arrayResult.status = 'success';
+          const state = {
+            ...core.createInitialState(),
+            pressureQueue: {
+              ...core.createInitialState().pressureQueue,
+              result: arrayResult
+            }
+          };
+
+          withStoredState(null, () => {
+            const saved = core.saveState(state);
+            const storedResult = saved
+              ? JSON.parse(localStorage.getItem(STORAGE_KEY)).pressureQueue.result
+              : null;
+            equal(
+              { saved, storedResult },
+              { saved: false, storedResult: null },
+              '数组 result 不应先通过校验再在 JSON 保存时丢失 status'
+            );
+          });
+        });
+
+        test('压力队列结果拒绝特殊对象、循环、稀疏数组和非 JSON 值', () => {
+          const dateResult = new Date('2026-07-16T00:00:00.000Z');
+          dateResult.status = 'success';
+          const nullPrototypeResult = Object.assign(Object.create(null), { status: 'success' });
+          const disguisedPrototypeResult = Object.assign(
+            Object.create({ constructor: Object }),
+            { status: 'success' }
+          );
+          class ResultRecord {
+            constructor() {
+              this.status = 'success';
+            }
+          }
+          const cyclicResult = { status: 'success' };
+          cyclicResult.self = cyclicResult;
+          const sparseValues = Array(2);
+          sparseValues[1] = 'kept';
+          const symbolKeyResult = { status: 'success', [Symbol('hidden')]: 'lost' };
+          const invalidResults = [
+            { label: 'Date', value: dateResult },
+            { label: 'null 原型对象', value: nullPrototypeResult },
+            { label: '伪装普通对象的自定义原型', value: disguisedPrototypeResult },
+            { label: '类实例', value: new ResultRecord() },
+            { label: '循环引用', value: cyclicResult },
+            { label: '稀疏数组', value: { status: 'success', values: sparseValues } },
+            { label: 'undefined', value: { status: 'success', value: undefined } },
+            { label: 'function', value: { status: 'success', value() {} } },
+            { label: 'symbol 值', value: { status: 'success', value: Symbol('lost') } },
+            { label: 'symbol 键', value: symbolKeyResult },
+            { label: 'bigint', value: { status: 'success', value: 1n } },
+            { label: 'NaN', value: { status: 'success', value: NaN } },
+            { label: 'Infinity', value: { status: 'success', value: Infinity } }
+          ];
+
+          invalidResults.forEach(({ label, value }) => {
+            const state = {
+              ...core.createInitialState(),
+              pressureQueue: {
+                ...core.createInitialState().pressureQueue,
+                result: value
+              }
+            };
+            const normalized = core.normalizeLoadedStateForTest(state);
+            assert(normalized.pressureQueue.result === null, `${label} result 迁移时应回退 null`);
+            withStoredState(null, () => {
+              equal(core.saveState(state), false, `${label} result 不应保存`);
+              equal(localStorage.getItem(STORAGE_KEY), null, `${label} result 不应写入存储`);
+            });
+          });
+        });
+
+        test('普通嵌套压力队列结果可稳定保存、JSON 往返和加载', () => {
+          const result = {
+            status: 'success',
+            score: 0.75,
+            generatedQueue: [1, 2, 3],
+            proof: {
+              checks: [true, null, { name: 'slot-pressure', passed: true }],
+              summary: { expanded: 24, deterministic: true }
+            }
+          };
+          const state = {
+            ...core.createInitialState(),
+            pressureQueue: {
+              ...core.createInitialState().pressureQueue,
+              result
+            },
+            activeStage: 'pressureQueue'
+          };
+
+          withStoredState(null, () => {
+            assert(core.saveState(state), 'JSON-safe 嵌套 result 应保存成功');
+            const storedState = JSON.parse(localStorage.getItem(STORAGE_KEY));
+            equal(storedState.pressureQueue.result, result, 'result JSON 往返后内容不稳定');
+            equal(core.loadState(), storedState, 'JSON-safe 嵌套 result 加载后不稳定');
+            equal(
+              JSON.stringify(core.loadState()),
+              JSON.stringify(storedState),
+              '加载后的 result 再序列化应保持一致'
+            );
+          });
+        });
+
+        test('压力队列迁移深拷贝 result 且双向修改互不影响', () => {
+          const inputResult = {
+            status: 'success',
+            proof: {
+              steps: [{ vehicleId: 7, passed: true }],
+              queue: [1, 2, 3]
+            }
+          };
+          const input = {
+            ...core.createInitialState(),
+            pressureQueue: {
+              ...core.createInitialState().pressureQueue,
+              result: inputResult
+            }
+          };
+          const normalized = core.normalizeLoadedStateForTest(input);
+          const outputResult = normalized.pressureQueue.result;
+
+          assert(outputResult !== inputResult, '迁移 result 仍共享顶层引用');
+          assert(outputResult.proof !== inputResult.proof, '迁移 result 仍共享嵌套对象');
+          assert(outputResult.proof.steps !== inputResult.proof.steps, '迁移 result 仍共享嵌套数组');
+          assert(outputResult.proof.steps[0] !== inputResult.proof.steps[0], '迁移 result 仍共享数组内对象');
+
+          outputResult.proof.steps[0].passed = false;
+          outputResult.proof.queue.push(4);
+          equal(inputResult.proof.steps[0].passed, true, '修改迁移结果污染了输入 result 对象');
+          equal(inputResult.proof.queue, [1, 2, 3], '修改迁移结果污染了输入 result 数组');
+
+          inputResult.proof.steps[0].vehicleId = 9;
+          inputResult.proof.queue[0] = 8;
+          equal(outputResult.proof.steps[0].vehicleId, 7, '修改输入污染了迁移 result 对象');
+          equal(outputResult.proof.queue, [1, 2, 3, 4], '修改输入污染了迁移 result 数组');
+        });
+
+        test('压力队列迁移深拷贝 annotation 及三个强度子对象', () => {
+          const annotation = {
+            ...pressureCore.createAnnotation(7),
+            initialOccupy: { mode: 'low' },
+            laterOccupy: { mode: 'custom', count: 2, duration: 3 },
+            rightPreview: { mode: 'custom', count: 4 }
+          };
+          const annotations = [annotation];
+          const input = {
+            ...core.createInitialState(),
+            pressureQueue: {
+              ...core.createInitialState().pressureQueue,
+              annotations
+            }
+          };
+          const outputAnnotations = core.normalizeLoadedStateForTest(input).pressureQueue.annotations;
+          const outputAnnotation = outputAnnotations[0];
+
+          assert(outputAnnotations !== annotations, '迁移 annotations 仍共享数组引用');
+          assert(outputAnnotation !== annotation, '迁移 annotation 仍共享顶层引用');
+          assert(outputAnnotation.initialOccupy !== annotation.initialOccupy, 'initialOccupy 仍共享引用');
+          assert(outputAnnotation.laterOccupy !== annotation.laterOccupy, 'laterOccupy 仍共享引用');
+          assert(outputAnnotation.rightPreview !== annotation.rightPreview, 'rightPreview 仍共享引用');
+
+          outputAnnotation.initialOccupy.mode = 'medium';
+          outputAnnotation.laterOccupy.count = 5;
+          equal(annotation.initialOccupy.mode, 'low', '修改迁移标注污染了输入 initialOccupy');
+          equal(annotation.laterOccupy.count, 2, '修改迁移标注污染了输入 laterOccupy');
+
+          annotation.laterOccupy.duration = 9;
+          annotation.rightPreview.count = 6;
+          equal(outputAnnotation.laterOccupy.duration, 3, '修改输入污染了迁移 laterOccupy');
+          equal(outputAnnotation.rightPreview.count, 4, '修改输入污染了迁移 rightPreview');
+        });
+
         test('本地恢复和保存拒绝稀疏数组', () => {
           const initialState = core.createInitialState();
           const sparseQueueWithExtraField = Array(1);
