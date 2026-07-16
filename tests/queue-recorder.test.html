@@ -250,6 +250,29 @@
             equal(appDocument.querySelector('[data-config-key="right"] .config-value').textContent, '3', '刷新后 configs 右侧配置错误');
           });
 
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            ...app.getState(),
+            pressureQueue: {
+              ...app.getState().pressureQueue,
+              levelName: '恢复测试关卡'
+            },
+            activeStage: 'pressureQueue'
+          }));
+          loadPhase = 'restore-pressure-queue';
+          appWindow.location.reload();
+          return;
+        }
+
+        if (loadPhase === 'restore-pressure-queue') {
+          test('刷新后恢复 pressureQueue 高亮和空页面骨架', () => {
+            assert(app, 'pressureQueue 刷新后 QueueRecorderApp 不存在');
+            equal(app.getState().activeStage, 'pressureQueue', '刷新后未恢复 pressureQueue 阶段');
+            equal(app.getState().pressureQueue.levelName, '恢复测试关卡', '刷新后未恢复压力队列状态');
+            assert(appDocument.querySelector('.stage-button[data-stage="pressureQueue"]').classList.contains('is-active'), '刷新后 pressureQueue 导航未高亮');
+            assert(appDocument.querySelector('#workspace h2').textContent.includes('压力队列生成'), '刷新后未渲染压力队列标题');
+            assert(appDocument.querySelector('#workspace').textContent.includes('请先导入关卡数据。'), '刷新后未渲染压力队列空提示');
+          });
+
           finish();
           return;
         }
@@ -444,6 +467,95 @@
           assert(!Object.prototype.hasOwnProperty.call(state, 'parking'), '初始状态不应再包含车位记录');
           assert(!Object.prototype.hasOwnProperty.call(state, 'script'), '初始状态不应再包含剧本还原数据');
           equal(state.activeStage, 'conveyor', '初始阶段错误');
+        });
+
+        test('初始状态精确包含默认压力队列工作区', () => {
+          equal(core.createInitialState().pressureQueue, {
+            levelName: '',
+            conveyorCapacity: '',
+            passengerQueueText: '',
+            vehicleTableText: '',
+            clickSequenceText: '',
+            searchBudget: '20000',
+            seed: '1',
+            annotations: [],
+            result: null,
+            errors: []
+          }, '压力队列初始状态错误');
+        });
+
+        test('旧状态缺失压力队列时补默认且保留其他字段', () => {
+          const legacyState = core.appendValue(core.createInitialState(), 'left', 2);
+          delete legacyState.pressureQueue;
+          legacyState.activeStage = 'pathSolve';
+          const normalized = core.normalizeLoadedStateForTest(legacyState);
+          equal(normalized.pressureQueue, core.createInitialState().pressureQueue, '缺失压力队列时未补默认值');
+          equal(normalized.queues.left, [2], '迁移旧状态时丢失了其他字段');
+          equal(normalized.activeStage, 'pathSolve', '迁移旧状态时未保留原活动阶段');
+        });
+
+        test('压力队列迁移安全过滤畸形字段、稀疏数组和非法标注', () => {
+          const validAnnotation = pressureCore.createAnnotation(7);
+          const invalidAnnotation = { ...pressureCore.createAnnotation(8), remainingSeats: 0 };
+          const sparseAnnotations = Array(4);
+          sparseAnnotations[0] = validAnnotation;
+          sparseAnnotations[2] = invalidAnnotation;
+          const sparseErrors = Array(4);
+          sparseErrors[0] = '第一个错误';
+          sparseErrors[2] = 42;
+          sparseErrors[3] = '最后一个错误';
+          const malformedPressureQueue = {
+            levelName: 42,
+            conveyorCapacity: null,
+            passengerQueueText: '1,2,3',
+            vehicleTableText: {},
+            clickSequenceText: '7,8',
+            searchBudget: 20000,
+            seed: undefined,
+            annotations: sparseAnnotations,
+            result: { status: 1 },
+            errors: sparseErrors,
+            polluted: true
+          };
+          const candidate = { ...core.createInitialState(), pressureQueue: malformedPressureQueue };
+          const normalized = core.normalizeLoadedStateForTest(candidate);
+
+          equal(normalized.pressureQueue, {
+            levelName: '',
+            conveyorCapacity: '',
+            passengerQueueText: '1,2,3',
+            vehicleTableText: '',
+            clickSequenceText: '7,8',
+            searchBudget: '20000',
+            seed: '1',
+            annotations: [validAnnotation],
+            result: null,
+            errors: ['第一个错误', '最后一个错误']
+          }, '畸形压力队列未安全回退或过滤');
+          assert(!Object.prototype.hasOwnProperty.call(normalized.pressureQueue, 'polluted'), '迁移后保留了未知字段');
+          assert(Array.from(normalized.pressureQueue.annotations).length === 1, '迁移后 annotations 不是稠密数组');
+          assert(Array.from(normalized.pressureQueue.errors).length === 2, '迁移后 errors 不是稠密数组');
+          withStoredState(null, () => assert(core.saveState(normalized), '正常化结果应通过严格状态验证'));
+        });
+
+        test('压力队列迁移不突变输入', () => {
+          const sparseAnnotations = Array(2);
+          sparseAnnotations[1] = pressureCore.createAnnotation(9);
+          const pressureQueue = {
+            ...core.createInitialState().pressureQueue,
+            levelName: 99,
+            annotations: sparseAnnotations,
+            errors: ['保留', 10]
+          };
+          const candidate = { ...core.createInitialState(), pressureQueue };
+
+          core.normalizeLoadedStateForTest(candidate);
+
+          assert(candidate.pressureQueue === pressureQueue, '迁移替换了输入切片引用');
+          assert(candidate.pressureQueue.annotations === sparseAnnotations, '迁移替换了输入 annotations 引用');
+          assert(!(0 in sparseAnnotations) && 1 in sparseAnnotations, '迁移填充或移除了输入稀疏数组槽位');
+          equal(candidate.pressureQueue.levelName, 99, '迁移改写了输入字段');
+          equal(candidate.pressureQueue.errors, ['保留', 10], '迁移改写了输入错误数组');
         });
 
         test('立即结算模拟器初始状态包含文本输入和空结果', () => {
@@ -1857,6 +1969,44 @@
           });
         });
 
+        test('保存和恢复接受合法压力队列并拒绝非法显式切片', () => {
+          const validState = {
+            ...core.createInitialState(),
+            pressureQueue: {
+              levelName: '关卡 18',
+              conveyorCapacity: '12',
+              passengerQueueText: '1,2,3',
+              vehicleTableText: 'id,color',
+              clickSequenceText: '7,8',
+              searchBudget: '30000',
+              seed: '2',
+              annotations: [pressureCore.createAnnotation(7)],
+              result: { status: 'success', generatedQueue: [1, 2, 3] },
+              errors: ['提示']
+            },
+            activeStage: 'pressureQueue'
+          };
+          const invalidTypeState = {
+            ...validState,
+            pressureQueue: { ...validState.pressureQueue, searchBudget: 30000 }
+          };
+          const extraKeyState = {
+            ...validState,
+            pressureQueue: { ...validState.pressureQueue, polluted: true }
+          };
+          const missingSliceState = { ...validState };
+          delete missingSliceState.pressureQueue;
+
+          withStoredState(null, () => {
+            assert(core.saveState(validState), '合法压力队列状态应保存成功');
+            equal(core.loadState(), validState, '合法压力队列状态应完整恢复');
+            equal(core.saveState(invalidTypeState), false, '非法字段类型的显式状态不应保存');
+            equal(core.saveState(extraKeyState), false, '带未知压力队列键的显式状态不应保存');
+            equal(core.saveState(missingSliceState), false, '缺失压力队列切片的显式状态不应保存');
+            equal(JSON.parse(localStorage.getItem(STORAGE_KEY)), validState, '非法状态不应覆盖已保存的合法压力队列状态');
+          });
+        });
+
         test('本地恢复和保存拒绝稀疏数组', () => {
           const initialState = core.createInitialState();
           const sparseQueueWithExtraField = Array(1);
@@ -1898,16 +2048,26 @@
           });
         });
 
-        test('工作台包含六阶段导航、viewport 和保存反馈状态区域', () => {
+        test('工作台精确包含八阶段导航、viewport 和保存反馈状态区域', () => {
           assert(app, 'QueueRecorderApp 不存在');
           const stageButtons = [...appDocument.querySelectorAll('.stage-button[data-stage]')];
-          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'simulation', 'queueFit', 'pathSolve'], '七个导航按钮错误');
+          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'simulation', 'queueFit', 'pathSolve', 'pressureQueue'], '八个导航按钮错误');
           assert(!appDocument.querySelector('.stage-button[data-stage="parking"]'), '不应再显示车位记录入口');
           assert(!appDocument.querySelector('.stage-button[data-stage="script"]'), '不应再显示剧本还原入口');
           equal(app.getState().activeStage, 'conveyor', '初始活动阶段应为 conveyor');
           assert(appDocument.querySelector('.stage-button[data-stage="conveyor"]').classList.contains('is-active'), 'conveyor 导航未高亮');
           assert(appDocument.querySelector('meta[name="viewport"][content="width=device-width, initial-scale=1"]'), 'viewport meta 缺失');
           assert(appDocument.querySelector('#saveState[role="status"][aria-live="polite"]'), '保存反馈 ARIA 状态区域缺失');
+        });
+
+        test('点击压力队列导航更新阶段、保存并渲染空页面骨架', () => {
+          appDocument.querySelector('.stage-button[data-stage="pressureQueue"]').click();
+          equal(app.getState().activeStage, 'pressureQueue', '导航未进入 pressureQueue 阶段');
+          equal(JSON.parse(localStorage.getItem(STORAGE_KEY)).activeStage, 'pressureQueue', 'pressureQueue 导航状态未保存');
+          assert(appDocument.querySelector('.stage-button[data-stage="pressureQueue"]').classList.contains('is-active'), 'pressureQueue 导航未高亮');
+          assert(appDocument.querySelector('#workspace h2').textContent.includes('压力队列生成'), '压力队列页面标题错误');
+          assert(appDocument.querySelector('#workspace').textContent.includes('请先导入关卡数据。'), '压力队列页面空提示错误');
+          appDocument.querySelector('.stage-button[data-stage="conveyor"]').click();
         });
 
         test('普通按钮获得焦点后数字键仍追加，Ctrl+Z 仍撤销', () => {

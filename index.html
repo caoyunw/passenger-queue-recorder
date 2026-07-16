@@ -945,6 +945,10 @@
           <span class="stage-index">07</span>
           <span><span class="stage-name">关卡求解</span><small class="stage-code">LEVEL SOLVE</small></span>
         </button>
+        <button class="stage-button" type="button" data-stage="pressureQueue">
+          <span class="stage-index">08</span>
+          <span><span class="stage-name">压力队列生成</span><small class="stage-code">PRESSURE QUEUE</small></span>
+        </button>
       </nav>
 
       <div class="save-panel">
@@ -984,12 +988,13 @@
   <script>
     const STORAGE_KEY = 'passenger-queue-recorder-state-v5';
     const SECTIONS = ['conveyor', 'left', 'right'];
-    const STAGES = [...SECTIONS, 'configs', 'simulation', 'queueFit', 'pathSolve'];
-    const STATE_KEYS = ['colors', 'queues', 'histories', 'simulation', 'queueFit', 'pathSolve', 'activeStage'];
+    const STAGES = [...SECTIONS, 'configs', 'simulation', 'queueFit', 'pathSolve', 'pressureQueue'];
+    const STATE_KEYS = ['colors', 'queues', 'histories', 'simulation', 'queueFit', 'pathSolve', 'pressureQueue', 'activeStage'];
     const COLOR_KEYS = ['name', 'value', 'hex'];
     const SIMULATION_KEYS = ['levelName', 'conveyorCapacity', 'beltQueueText', 'leftQueueText', 'rightQueueText', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText', 'screenshotDataUrl', 'hotspots', 'nextHotspotId', 'result', 'errors'];
     const QUEUE_FIT_KEYS = ['levelName', 'conveyorCapacity', 'leftQueueLength', 'beltQueueText', 'leftQueueText', 'rightQueueText', 'passengerQueueText', 'vehicleTableText', 'targetVehicleTableText', 'targetRecordFilename', 'targetRecordText', 'fittedBeltQueueText', 'fittedLeftQueueText', 'fittedRightQueueText', 'fittedPassengerQueueText', 'fittedClickSequenceText', 'score', 'roleSummary', 'errors'];
     const PATH_SOLVE_KEYS = ['levelName', 'conveyorCapacity', 'beltQueueText', 'leftQueueText', 'rightQueueText', 'vehicleTableText', 'clickSequenceText', 'beamWidth', 'branchLimit', 'result', 'errors'];
+    const PRESSURE_QUEUE_KEYS = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText', 'searchBudget', 'seed', 'annotations', 'result', 'errors'];
     const SIMULATION_HOTSPOT_KEYS = ['id', 'vehicleId', 'xPercent', 'yPercent', 'isClicked'];
     const VEHICLE_CAPACITIES = [4, 6, 10];
     const PATH_SOLVE_ASYNC_SEARCH_BUDGET = 4096;
@@ -1074,6 +1079,21 @@
       };
     }
 
+    function createEmptyPressureQueue() {
+      return {
+        levelName: '',
+        conveyorCapacity: '',
+        passengerQueueText: '',
+        vehicleTableText: '',
+        clickSequenceText: '',
+        searchBudget: '20000',
+        seed: '1',
+        annotations: [],
+        result: null,
+        errors: []
+      };
+    }
+
     function createInitialState() {
       return {
         colors: DEFAULT_COLORS.map(color => ({ ...color })),
@@ -1082,6 +1102,7 @@
         simulation: createEmptySimulation(),
         queueFit: createEmptyQueueFit(),
         pathSolve: createEmptyPathSolve(),
+        pressureQueue: createEmptyPressureQueue(),
         activeStage: 'conveyor'
       };
     }
@@ -1220,6 +1241,7 @@
         simulation: state.simulation,
         queueFit: state.queueFit,
         pathSolve: state.pathSolve,
+        pressureQueue: state.pressureQueue,
         activeStage: 'conveyor'
       };
     }
@@ -4428,6 +4450,23 @@
         && pathSolve.errors.every(error => typeof error === 'string');
     }
 
+    function isValidPressureQueue(pressureQueue) {
+      return hasExactKeys(pressureQueue, PRESSURE_QUEUE_KEYS)
+        && typeof pressureQueue.levelName === 'string'
+        && typeof pressureQueue.conveyorCapacity === 'string'
+        && typeof pressureQueue.passengerQueueText === 'string'
+        && typeof pressureQueue.vehicleTableText === 'string'
+        && typeof pressureQueue.clickSequenceText === 'string'
+        && typeof pressureQueue.searchBudget === 'string'
+        && typeof pressureQueue.seed === 'string'
+        && isDenseArray(pressureQueue.annotations)
+        && pressureQueue.annotations.every(window.PressureQueueCore.isAnnotation)
+        && (pressureQueue.result === null
+          || (typeof pressureQueue.result === 'object' && typeof pressureQueue.result.status === 'string'))
+        && isDenseArray(pressureQueue.errors)
+        && pressureQueue.errors.every(error => typeof error === 'string');
+    }
+
     function isValidState(candidate) {
       if (!hasExactKeys(candidate, STATE_KEYS)
         || !isDenseArray(candidate.colors)
@@ -4456,6 +4495,7 @@
         && isValidSimulation(candidate.simulation)
         && isValidQueueFit(candidate.queueFit)
         && isValidPathSolve(candidate.pathSolve)
+        && isValidPressureQueue(candidate.pressureQueue)
         && STAGES.includes(candidate.activeStage);
     }
 
@@ -4516,6 +4556,30 @@
       return normalized;
     }
 
+    function normalizePressureQueueForCurrentVersion(value) {
+      const normalized = createEmptyPressureQueue();
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return normalized;
+
+      const hasOwn = key => Object.prototype.hasOwnProperty.call(value, key);
+      const stringKeys = PRESSURE_QUEUE_KEYS.slice(0, 7);
+      stringKeys.forEach(key => {
+        if (hasOwn(key) && typeof value[key] === 'string') {
+          normalized[key] = value[key];
+        }
+      });
+      normalized.annotations = hasOwn('annotations') && Array.isArray(value.annotations)
+        ? value.annotations.filter(window.PressureQueueCore.isAnnotation)
+        : [];
+      normalized.result = hasOwn('result') && (value.result === null
+        || (typeof value.result === 'object' && value.result && typeof value.result.status === 'string'))
+        ? value.result
+        : null;
+      normalized.errors = hasOwn('errors') && Array.isArray(value.errors)
+        ? value.errors.filter(error => typeof error === 'string')
+        : [];
+      return isValidPressureQueue(normalized) ? normalized : createEmptyPressureQueue();
+    }
+
     function normalizeLoadedState(candidate) {
       if (!candidate || typeof candidate !== 'object') return createInitialState();
       const loadableKeys = new Set([...STATE_KEYS, 'parking', 'script']);
@@ -4527,9 +4591,14 @@
         simulation: normalizeSimulationForCurrentVersion(candidate.simulation),
         queueFit: normalizeQueueFitForCurrentVersion(candidate.queueFit),
         pathSolve: normalizePathSolveForCurrentVersion(candidate.pathSolve),
+        pressureQueue: normalizePressureQueueForCurrentVersion(candidate.pressureQueue),
         activeStage: STAGES.includes(candidate.activeStage) ? candidate.activeStage : 'conveyor'
       };
       return isValidState(candidateWithCurrentData) ? candidateWithCurrentData : createInitialState();
+    }
+
+    function normalizeLoadedStateForTest(candidate) {
+      return normalizeLoadedState(candidate);
     }
 
     function loadState() {
@@ -4603,7 +4672,8 @@
       startNextLevel,
       resetEverything,
       loadState,
-      saveState
+      saveState,
+      normalizeLoadedStateForTest
     });
 
     const STAGE_DETAILS = {
@@ -5626,6 +5696,15 @@
       renderPathSolveProgress();
     }
 
+    function renderPressureQueueStage() {
+      workspace.innerHTML = `
+        <section class="panel">
+          <h2>压力队列生成</h2>
+          <p class="empty-sequence">请先导入关卡数据。</p>
+        </section>
+      `;
+    }
+
     function fallbackCopyText(text) {
       const textarea = document.createElement('textarea');
       textarea.value = text;
@@ -5709,6 +5788,8 @@
         renderQueueFitStage();
       } else if (state.activeStage === 'pathSolve') {
         renderPathSolveStage();
+      } else if (state.activeStage === 'pressureQueue') {
+        renderPressureQueueStage();
       } else {
         workspace.innerHTML = '<section class="panel input-panel"><p class="empty-sequence">未知阶段</p></section>';
       }
