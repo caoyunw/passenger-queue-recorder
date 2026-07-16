@@ -1435,6 +1435,63 @@
       return { values, errors };
     }
 
+    function parsePressureQueueModel(currentState, pressure = currentState.pressureQueue) {
+      const source = pressure && typeof pressure === 'object' ? pressure : {};
+      const parsedVehicles = parseScriptVehicleTable(source.vehicleTableText);
+      const parsedPassengers = parseStableSimulationPassengerQueue(currentState, source.passengerQueueText);
+      const parsedPath = parseStableSimulationClickSequence(source.clickSequenceText);
+      const conveyorCapacity = parsePositiveInteger(source.conveyorCapacity);
+      const searchBudget = parsePositiveInteger(source.searchBudget);
+      const seed = parseNonNegativeInteger(source.seed);
+      const colorErrors = parsedVehicles.vehicles
+        .filter(vehicle => !isScriptColorValue(currentState, vehicle.colorValue))
+        .map(vehicle => `车辆 ${vehicle.id} 的颜色映射 ${vehicle.colorValue} 不存在`);
+      const optionErrors = [
+        ...(conveyorCapacity === null ? ['传送带容量必须是正整数'] : []),
+        ...(searchBudget === null ? ['搜索预算必须是正整数'] : []),
+        ...(seed === null ? ['搜索种子必须是非负整数'] : [])
+      ];
+      const model = {
+        conveyorCapacity,
+        passengers: parsedPassengers.values,
+        vehicles: parsedVehicles.vehicles,
+        path: parsedPath.values,
+        annotations: window.PressureQueueCore.syncAnnotations(parsedPath.values, source.annotations),
+        searchBudget,
+        seed
+      };
+      const parseErrorMessages = [
+        ...parsedVehicles.errors,
+        ...parsedPassengers.errors,
+        ...parsedPath.errors,
+        ...colorErrors,
+        ...optionErrors
+      ];
+      const parseErrors = parseErrorMessages.map(message => window.PressureQueueCore.createIssue(
+        'input_error',
+        'parse_error',
+        message
+      ));
+      const baseErrors = parseErrors.length === 0
+        ? window.PressureQueueCore.validateBaseInput(model).errors
+        : [];
+
+      return { model, errors: [...parseErrors, ...baseErrors] };
+    }
+
+    function preparePressureQueueAnnotations(currentState) {
+      const parsed = parsePressureQueueModel(currentState);
+      return {
+        ...currentState,
+        pressureQueue: {
+          ...currentState.pressureQueue,
+          annotations: parsed.model.annotations,
+          result: null,
+          errors: parsed.errors.map(error => error.message)
+        }
+      };
+    }
+
     function parseStableSimulationInput(state, input) {
       const conveyorCapacity = parsePositiveInteger(input && input.conveyorCapacity);
       const parsedPassengerQueue = parseStableSimulationPassengerQueue(state, input && input.passengerQueueText);
@@ -4786,6 +4843,8 @@
       addColor,
       getConfigs,
       parseScriptVehicleTable,
+      parsePressureQueueModel,
+      preparePressureQueueAnnotations,
       parseStableSimulationInput,
       validateVehiclePath,
       solveVehiclePath,

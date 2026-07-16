@@ -219,6 +219,19 @@
         const core = appWindow.QueueRecorderCore;
         const pressureCore = appWindow.PressureQueueCore;
         const app = appWindow.QueueRecorderApp;
+        const makePressureInput = (overrides = {}) => ({
+          conveyorCapacity: 4,
+          passengers: [3, 3, 3, 3, 4, 4, 4, 4, 1, 1, 1, 1, 2, 2, 2, 2],
+          vehicles: [
+            { id: 1, colorValue: 3, capacity: 4, frontVehicleIds: [] },
+            { id: 2, colorValue: 4, capacity: 4, frontVehicleIds: [1] },
+            { id: 3, colorValue: 1, capacity: 4, frontVehicleIds: [] },
+            { id: 4, colorValue: 2, capacity: 4, frontVehicleIds: [] }
+          ],
+          path: [1, 2, 3, 4],
+          annotations: [],
+          ...overrides
+        });
 
         if (loadPhase === 'restore-right') {
           test('刷新后恢复 right 阶段、队列色块和乘客数量', () => {
@@ -452,6 +465,295 @@
           equal(pressureCore.resolvePreviewStrength({ mode: 'custom', count: 11 }), null, '超过预告上界应无效');
           equal(pressureCore.resolvePreviewStrength({ mode: 'custom', count: 1.5 }), null, '非整数预告人数应无效');
           equal(pressureCore.resolvePreviewStrength(null), null, '空预告强度应无法换算');
+        });
+
+        test('压力队列合法基础输入返回无错误的新计数表', () => {
+          assert(pressureCore, 'PressureQueueCore 不存在');
+          const input = makePressureInput();
+          const result = pressureCore.validateBaseInput(input);
+          equal(result.errors, [], '合法输入不应报错');
+          equal(Array.from(result.passengerCounts.entries()), [[3, 4], [4, 4], [1, 4], [2, 4]], '乘客计数错误');
+          equal(Array.from(result.seatCounts.entries()), [[3, 4], [4, 4], [1, 4], [2, 4]], '座位计数错误');
+          assert(result.vehiclesById !== input.vehicles, '车辆索引应为新 Map');
+        });
+
+        test('压力队列计数 helper 对非数组安全且不突变输入', () => {
+          const values = [0, 2, 0];
+          const snapshot = [...values];
+          equal(Array.from(pressureCore.countValues(values).entries()), [[0, 2], [2, 1]], '数值计数错误');
+          equal(values, snapshot, '计数 helper 突变了输入');
+          equal(Array.from(pressureCore.countValues(null).entries()), [], '非数组应返回空 Map');
+        });
+
+        test('压力队列问题 helper 生成可 JSON 保存对象且保护固定字段', () => {
+          const issue = pressureCore.createIssue('input_error', 'fixed_code', '固定消息', {
+            category: 'overridden',
+            code: 'overridden',
+            message: 'overridden',
+            vehicleId: 0
+          });
+          equal(issue, {
+            category: 'input_error',
+            code: 'fixed_code',
+            message: '固定消息',
+            vehicleId: 0
+          }, '问题对象合并或固定字段保护错误');
+          equal(JSON.parse(JSON.stringify(issue)), issue, '问题对象不能 JSON 往返');
+        });
+
+        test('压力队列正确路径逐步检查未点击的前方阻挡', () => {
+          const result = pressureCore.validateBaseInput(makePressureInput({ path: [2, 1, 3, 4] }));
+          const blocked = result.errors.find(error => error.code === 'blocked_path_step');
+          assert(blocked, '未识别被挡车辆');
+          equal({ step: blocked.step, vehicleId: blocked.vehicleId, blockerIds: blocked.blockerIds }, {
+            step: 1,
+            vehicleId: 2,
+            blockerIds: [1]
+          }, '阻挡步骤细节错误');
+        });
+
+        test('压力队列路径严格拒绝缺失、重复、未知和额外车辆', () => {
+          [
+            [1, 2, 3],
+            [1, 1, 3, 4],
+            [1, 2, 3, 4, 4],
+            [1, 2, 3, 99]
+          ].forEach(path => {
+            const errors = pressureCore.validateBaseInput(makePressureInput({ path })).errors;
+            assert(errors.some(error => error.code === 'path_not_exact'), `路径 ${path.join(',')} 应报 path_not_exact`);
+          });
+          const unknownErrors = pressureCore.validateBaseInput(makePressureInput({ path: [99, 2, 3, 4] })).errors;
+          assert(unknownErrors.some(error => error.code === 'unknown_path_vehicle' && error.vehicleId === 99), '未知路径车辆未单独报错');
+          const stillBlocked = pressureCore.validateBaseInput(makePressureInput({ path: [99, 2, 1, 3, 4] })).errors;
+          assert(stillBlocked.some(error => error.code === 'blocked_path_step'
+            && error.vehicleId === 2
+            && error.blockerIds.includes(1)), '未知项错误删除了未点击 blocker');
+        });
+
+        test('压力队列路径和阻挡检查支持车辆 id 0', () => {
+          const input = makePressureInput({
+            passengers: [1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+            vehicles: [
+              { id: 0, colorValue: 1, capacity: 4, frontVehicleIds: [] },
+              { id: 1, colorValue: 2, capacity: 10, frontVehicleIds: [0] }
+            ],
+            path: [0, 1]
+          });
+          equal(pressureCore.validateBaseInput(input).errors, [], '合法 id 0 路径不应报错');
+          const blocked = pressureCore.validateBaseInput({ ...input, path: [1, 0] }).errors;
+          assert(blocked.some(error => error.code === 'blocked_path_step'
+            && error.vehicleId === 1
+            && error.blockerIds.includes(0)), 'id 0 未作为 blocker 被识别');
+        });
+
+        test('压力队列颜色总量拒绝乘客少、乘客多和任一侧独有颜色', () => {
+          const fewer = pressureCore.validateBaseInput(makePressureInput({
+            passengers: makePressureInput().passengers.slice(0, -1)
+          })).errors;
+          assert(fewer.some(error => error.code === 'color_total_mismatch'
+            && error.colorValue === 2
+            && error.passengerCount === 3
+            && error.seatCount === 4), '乘客少未报颜色总量错误');
+
+          const more = pressureCore.validateBaseInput(makePressureInput({
+            passengers: [...makePressureInput().passengers, 2]
+          })).errors;
+          assert(more.some(error => error.code === 'color_total_mismatch'
+            && error.colorValue === 2
+            && error.passengerCount === 5
+            && error.seatCount === 4), '乘客多未报颜色总量错误');
+
+          const passengerOnly = pressureCore.validateBaseInput(makePressureInput({
+            passengers: [...makePressureInput().passengers.slice(0, -1), 5]
+          })).errors;
+          assert(passengerOnly.some(error => error.code === 'color_total_mismatch'
+            && error.colorValue === 5
+            && error.passengerCount === 1
+            && error.seatCount === 0), '仅乘客侧存在的颜色未报错');
+
+          const vehicleOnly = pressureCore.validateBaseInput(makePressureInput({
+            vehicles: makePressureInput().vehicles.map(vehicle => (
+              vehicle.id === 4 ? { ...vehicle, colorValue: 5 } : vehicle
+            ))
+          })).errors;
+          assert(vehicleOnly.some(error => error.code === 'color_total_mismatch'
+            && error.colorValue === 5
+            && error.passengerCount === 0
+            && error.seatCount === 4), '仅车辆侧存在的颜色未报错');
+        });
+
+        test('压力队列右侧预告队列严格使用 C+10 边界', () => {
+          const boundary = makePressureInput({
+            passengers: Array(14).fill(1),
+            vehicles: [
+              { id: 0, colorValue: 1, capacity: 10, frontVehicleIds: [] },
+              { id: 1, colorValue: 1, capacity: 4, frontVehicleIds: [] }
+            ],
+            path: [0, 1]
+          });
+          assert(!pressureCore.validateBaseInput(boundary).errors.some(error => error.code === 'right_preview_too_short'), 'C+10 边界应合法');
+          const below = pressureCore.validateBaseInput({
+            ...boundary,
+            passengers: boundary.passengers.slice(0, -1)
+          }).errors;
+          assert(below.some(error => error.code === 'right_preview_too_short'), 'C+9 应报右侧预告过短');
+        });
+
+        test('压力队列拒绝非安全正整数容量且不叠加荒谬预告比较', () => {
+          [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, null].forEach(conveyorCapacity => {
+            const errors = pressureCore.validateBaseInput(makePressureInput({ conveyorCapacity })).errors;
+            assert(errors.some(error => error.code === 'invalid_conveyor_capacity'), `容量 ${conveyorCapacity} 应报 invalid_conveyor_capacity`);
+            assert(!errors.some(error => error.code === 'right_preview_too_short'), '非法容量不应触发预告长度比较');
+          });
+          const emptyErrors = pressureCore.validateBaseInput(makePressureInput({ vehicles: [], path: [] })).errors;
+          assert(emptyErrors.some(error => error.code === 'empty_vehicle_table'), '空车辆表未报错');
+        });
+
+        test('压力队列基础校验遇到畸形车辆时不抛异常且不突变输入', () => {
+          const input = makePressureInput({
+            vehicles: [
+              null,
+              { id: 1, colorValue: null, capacity: '4', frontVehicleIds: null }
+            ],
+            path: [1, 0]
+          });
+          const snapshot = clone(input);
+          const result = pressureCore.validateBaseInput(input);
+          equal(input, snapshot, '畸形车辆校验突变了输入');
+          assert(result && Array.isArray(result.errors), '畸形车辆校验未返回结果');
+          assert(result.errors.some(error => error.code === 'invalid_vehicle'), '非对象车辆未报明确输入错误');
+          assert(result.errors.some(error => error.code === 'invalid_vehicle_color_value'), '畸形车辆颜色未报明确输入错误');
+          assert(result.errors.some(error => error.code === 'invalid_vehicle_capacity'), '畸形车辆座位未报明确输入错误');
+          assert(result.errors.some(error => error.code === 'invalid_front_vehicle_ids'), '畸形前方列表未报明确输入错误');
+        });
+
+        test('压力队列适配器复用真实 CSV、乘客和点击解析器', () => {
+          const currentState = core.createInitialState();
+          const retained = {
+            ...pressureCore.createAnnotation(1),
+            settlementTarget: 'instant',
+            rightPreview: { mode: 'custom', count: 2 }
+          };
+          const pressure = {
+            ...currentState.pressureQueue,
+            conveyorCapacity: '4',
+            passengerQueueText: '3,3 3，3|1,1,1,1,1,1,1,1,1,1',
+            vehicleTableText: [
+              '车辆id,车辆色,车座位,深度,前方车辆id,后方车辆id,车机制',
+              '0,0,4,0,,"1,2",问号车',
+              '1,4,4,1,0,2,普通车',
+              '2,4,6,2,1,,普通车'
+            ].join('\n'),
+            clickSequenceText: '0, 1,2',
+            searchBudget: '1',
+            seed: '0',
+            annotations: [retained, { ...pressureCore.createAnnotation(99), pressureSlot: true }]
+          };
+          const parsed = core.parsePressureQueueModel(currentState, pressure);
+          equal(parsed.errors, [], '合法适配器输入不应报错');
+          equal(parsed.model.conveyorCapacity, 4, '传送带容量解析错误');
+          equal(parsed.model.passengers, [3, 3, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], '乘客队列真实 parser 未复用');
+          equal(parsed.model.vehicles, [
+            { id: 0, colorValue: 3, capacity: 4, depth: 0, frontVehicleIds: [], backVehicleIds: [1, 2] },
+            { id: 1, colorValue: 1, capacity: 4, depth: 1, frontVehicleIds: [0], backVehicleIds: [2] },
+            { id: 2, colorValue: 1, capacity: 6, depth: 2, frontVehicleIds: [1], backVehicleIds: [] }
+          ], 'CSV 引号、id 0 或颜色映射解析错误');
+          equal(parsed.model.path, [0, 1, 2], '点击路径真实 parser 未复用');
+          equal(parsed.model.searchBudget, 1, '搜索预算下界解析错误');
+          equal(parsed.model.seed, 0, '种子下界解析错误');
+          equal(parsed.model.annotations, [pressureCore.createAnnotation(0), retained, pressureCore.createAnnotation(2)], '标注未严格跟随 path 保留、补默认或剔除');
+          assert(parsed.model.annotations[1] !== retained, '适配器泄漏了已有标注引用');
+        });
+
+        test('压力队列适配器将 parser、选项和颜色错误统一归类且不叠基础噪音', () => {
+          const currentState = core.createInitialState();
+          const parsed = core.parsePressureQueueModel(currentState, {
+            ...currentState.pressureQueue,
+            conveyorCapacity: '0',
+            passengerQueueText: '999,bad',
+            vehicleTableText: '0,0,5,0,,,',
+            clickSequenceText: 'bad,99',
+            searchBudget: '0',
+            seed: '-1'
+          });
+          assert(parsed.errors.length >= 6, '未收集全部 parser 与选项错误');
+          assert(parsed.errors.every(error => error.category === 'input_error'
+            && error.code === 'parse_error'
+            && typeof error.message === 'string'), '解析错误未统一归类');
+          assert(!parsed.errors.some(error => ['invalid_conveyor_capacity', 'empty_vehicle_table', 'path_not_exact', 'unknown_path_vehicle', 'color_total_mismatch', 'right_preview_too_short'].includes(error.code)), '解析失败时叠加了误导性基础错误');
+        });
+
+        test('压力队列适配器严格校验 budget/seed 边界与当前颜色映射', () => {
+          const currentState = core.createInitialState();
+          const pressure = {
+            ...currentState.pressureQueue,
+            conveyorCapacity: '4',
+            passengerQueueText: Array(14).fill(3).join(','),
+            vehicleTableText: [
+              '车辆id,车辆色,车座位,深度,前方车辆id,后方车辆id',
+              '0,0,10,0,,,',
+              '1,0,4,0,,,'
+            ].join('\n'),
+            clickSequenceText: '0,1',
+            searchBudget: '9007199254740992',
+            seed: '9007199254740992'
+          };
+          const unsafe = core.parsePressureQueueModel(currentState, pressure);
+          assert(unsafe.errors.some(error => error.code === 'parse_error' && error.message.includes('搜索预算')), '非安全 budget 未报解析错误');
+          assert(unsafe.errors.some(error => error.code === 'parse_error' && error.message.includes('搜索种子')), '非安全 seed 未报解析错误');
+
+          const missingBlueState = {
+            ...currentState,
+            colors: currentState.colors.filter(color => color.value !== 3)
+          };
+          const missingColor = core.parsePressureQueueModel(missingBlueState, {
+            ...pressure,
+            searchBudget: '20000',
+            seed: '1'
+          });
+          assert(missingColor.errors.some(error => error.code === 'parse_error'
+            && error.message.includes('颜色映射 3 不存在')), '车辆的当前颜色映射缺失未报错');
+        });
+
+        test('压力队列标注准备返回新 state、清结果并仅写入错误消息', () => {
+          const base = core.createInitialState();
+          const retained = { ...pressureCore.createAnnotation(1), pressureSlot: true };
+          const currentState = {
+            ...base,
+            pressureQueue: {
+              ...base.pressureQueue,
+              levelName: '保留关卡名',
+              conveyorCapacity: '4',
+              passengerQueueText: '3,3,3,3,1,1,1,1,1,1,1,1,1,1',
+              vehicleTableText: [
+                '车辆id,车辆色,车座位,深度,前方车辆id,后方车辆id',
+                '0,0,4,0,,,',
+                '1,4,10,0,,,'
+              ].join('\n'),
+              clickSequenceText: '0,1',
+              annotations: [retained, pressureCore.createAnnotation(99)],
+              result: { status: 'stale' },
+              errors: ['stale error']
+            }
+          };
+          const snapshot = clone(currentState);
+          const nextState = core.preparePressureQueueAnnotations(currentState);
+          equal(currentState, snapshot, '准备标注突变了输入 state');
+          assert(nextState !== currentState, '准备标注未返回新 state');
+          assert(nextState.pressureQueue !== currentState.pressureQueue, '准备标注未返回新 pressureQueue 切片');
+          equal(nextState.pressureQueue.annotations, [pressureCore.createAnnotation(0), retained], '准备标注的顺序、保留、补全或剔除错误');
+          equal(nextState.pressureQueue.result, null, '准备标注未清空旧结果');
+          equal(nextState.pressureQueue.errors, [], '合法输入不应写入错误消息');
+          equal(nextState.pressureQueue.levelName, '保留关卡名', '准备标注丢失了其他 pressureQueue 字段');
+          equal(nextState.colors, currentState.colors, '准备标注丢失了其他 state 字段');
+
+          const invalid = core.preparePressureQueueAnnotations({
+            ...currentState,
+            pressureQueue: { ...currentState.pressureQueue, searchBudget: '0' }
+          });
+          assert(invalid.pressureQueue.errors.length === 1
+            && invalid.pressureQueue.errors[0].includes('搜索预算'), '准备标注未仅写入 issue message');
+          equal(invalid.pressureQueue.result, null, '错误输入准备时未清空旧结果');
         });
 
         if (!core) {
