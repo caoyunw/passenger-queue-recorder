@@ -277,6 +277,9 @@
           equal(state.simulation, {
             levelName: '',
             conveyorCapacity: '',
+            beltQueueText: '',
+            leftQueueText: '',
+            rightQueueText: '',
             passengerQueueText: '',
             vehicleTableText: '',
             clickSequenceText: '',
@@ -287,6 +290,24 @@
             errors: []
           }, '模拟器初始状态错误');
           assert(core.saveState(state), '包含模拟器状态时应允许保存');
+        });
+
+        test('路径求解器初始状态包含输入、结果和错误', () => {
+          const state = core.createInitialState();
+          equal(state.pathSolve, {
+            levelName: '',
+            conveyorCapacity: '',
+            beltQueueText: '',
+            leftQueueText: '',
+            rightQueueText: '',
+            vehicleTableText: '',
+            clickSequenceText: '',
+            beamWidth: '192',
+            branchLimit: '24',
+            result: null,
+            errors: []
+          }, '路径求解器初始状态错误');
+          assert(core.saveState(state), '包含路径求解器状态时应允许保存');
         });
 
         test('追加、删除和撤销只影响当前区域', () => {
@@ -544,7 +565,352 @@
           equal(result.steps[0].departedVehicleIds, [0], '车辆 id 0 满员后应开走');
 
           const hotspotState = core.addStableSimulationHotspot(state, { vehicleId: 0, xPercent: 25, yPercent: 40 });
-          equal(hotspotState.simulation.hotspots, [{ id: 1, vehicleId: 0, xPercent: 25, yPercent: 40 }], '截图标记应允许车辆 id 0');
+          equal(hotspotState.simulation.hotspots, [{ id: 1, vehicleId: 0, xPercent: 25, yPercent: 40, isClicked: false }], '截图标记应允许车辆 id 0');
+        });
+
+        test('路径求解器拒绝前方阻挡未解除的点击路径', () => {
+          const table = [
+            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+            '28\t1\t4\t3\t44\t',
+            '41\t2\t4\t3\t44\t',
+            '44\t3\t4\t0\t\t28,41'
+          ].join('\n');
+
+          const result = core.validateVehiclePath(core.createInitialState(), {
+            conveyorCapacity: '4',
+            beltQueueText: '3,3,3,3',
+            leftQueueText: '1,1,1,1',
+            rightQueueText: '2,2,2,2',
+            vehicleTableText: table,
+            clickSequenceText: '28,44,41'
+          });
+
+          equal(result.status, 'invalid', '阻挡未解除时路径应判定非法');
+          assert(result.errors.some(error => error.includes('#28') && error.includes('#44')), '非法原因应指出 #28 被 #44 阻挡');
+        });
+
+        test('路径求解器搜索时必须先点击阻挡车再点击被阻挡车', () => {
+          const table = [
+            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+            '28\t1\t4\t3\t44\t',
+            '41\t2\t4\t3\t44\t',
+            '44\t3\t4\t0\t\t28,41'
+          ].join('\n');
+
+          const result = core.solveVehiclePath(core.createInitialState(), {
+            conveyorCapacity: '4',
+            beltQueueText: '3,3,3,3',
+            leftQueueText: '1,1,1,1',
+            rightQueueText: '2,2,2,2',
+            vehicleTableText: table,
+            beamWidth: '8',
+            branchLimit: '8'
+          });
+
+          equal(result.status, 'solved', '路径求解应成功');
+          assert(result.path.indexOf(44) < result.path.indexOf(28), '#44 必须早于 #28');
+          assert(result.path.indexOf(44) < result.path.indexOf(41), '#44 必须早于 #41');
+          equal(result.proof[0].clickedVehicleId, 44, '第一步应点击唯一可点的 #44');
+        });
+
+        test('完整求解器必须利用乘客队列避开会占满车位的路径', () => {
+          const table = [
+            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+            '1\t2\t4\t0\t\t',
+            '2\t2\t4\t0\t\t',
+            '3\t2\t4\t0\t\t',
+            '4\t2\t4\t0\t\t',
+            '5\t1\t4\t0\t\t'
+          ].join('\n');
+
+          const result = core.solveVehiclePath(core.createInitialState(), {
+            conveyorCapacity: '4',
+            beltQueueText: '1,1,1,1',
+            leftQueueText: '',
+            rightQueueText: '2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2',
+            vehicleTableText: table,
+            beamWidth: '16',
+            branchLimit: '8'
+          });
+
+          equal(result.status, 'solved', '完整求解应成功');
+          equal(result.path[0], 5, '必须先点击能清空初始传送带的红车，否则 4 辆蓝车会占满车位');
+          equal(result.finalBelt, [], '求解结束后传送带应清空');
+          equal(result.finalLeftQueue, [], '求解结束后左侧队列应清空');
+          equal(result.finalRightQueue, [], '求解结束后右侧队列应清空');
+          equal(result.finalSlots, [null, null, null, null], '求解结束后车位应清空');
+        });
+
+        test('完整求解器应优先推进当前传送带阻塞颜色的解锁路径', () => {
+          const table = [
+            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+            '1\t1\t4\t0\t\t10,11,12,13',
+            '2\t2\t4\t0\t\t4',
+            '4\t4\t4\t1\t2\t'
+          ].join('\n');
+
+          const result = core.solveVehiclePath(core.createInitialState(), {
+            conveyorCapacity: '12',
+            beltQueueText: '1,1,1,1,2,2,2,2,4,4,4,4',
+            leftQueueText: '',
+            rightQueueText: '',
+            vehicleTableText: table,
+            beamWidth: '1',
+            branchLimit: '3'
+          });
+
+          equal(result.status, 'solved', '目标解锁优先级不应破坏可解性');
+          equal(result.path[0], 2, '应先点击能解锁当前阻塞颜色 4 的前置车 #2，而不是局部后方更多的 #1');
+          assert(result.path.indexOf(2) < result.path.indexOf(4), '#2 必须早于被阻塞的颜色 4 车辆 #4');
+        });
+
+        test('完整求解器应避开单空位不可延续的搜索状态', () => {
+          const table = [
+            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+            '1\t6\t6\t0\t\t2,4,5,10,12',
+            '2\t1\t6\t1\t1\t8',
+            '3\t6\t4\t0\t\t6,11',
+            '4\t5\t6\t1\t1\t5',
+            '5\t3\t4\t2\t1,4\t',
+            '6\t6\t6\t1\t3\t7',
+            '7\t2\t6\t2\t6\t8',
+            '8\t1\t6\t3\t2,7\t',
+            '9\t2\t4\t0\t\t',
+            '10\t4\t4\t1\t1\t',
+            '11\t1\t4\t1\t3\t12',
+            '12\t4\t6\t2\t11,1\t'
+          ].join('\n');
+
+          const result = core.solveVehiclePath(core.createInitialState(), {
+            conveyorCapacity: '8',
+            beltQueueText: '2,2,2,2,2,2,6,6',
+            leftQueueText: '4,4,4,4,1,1,1,1,1,6,6,1,4,2,6,1,3,2',
+            rightQueueText: '6,1,1,4,1,6,1,6,5,1,4,5,5,3,5,5,3,6,6,5,1,6,4,1,3,6,4,1,6,2,4,6,6,2,6,1',
+            vehicleTableText: table,
+            beamWidth: '4',
+            branchLimit: '16'
+          });
+
+          equal(result.status, 'solved', '低 Beam 下也应保留可继续状态，而不是停在单空位死局');
+          equal(result.path.length, 12, '应完整覆盖全部车辆');
+        });
+
+        test('完整求解器补充乘客时必须先清空左侧队列再使用右侧队列', () => {
+          const table = [
+            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+            '1\t1\t4\t0\t\t',
+            '2\t2\t4\t0\t\t',
+            '3\t3\t4\t0\t\t'
+          ].join('\n');
+
+          const result = core.solveVehiclePath(core.createInitialState(), {
+            conveyorCapacity: '4',
+            beltQueueText: '1,1,1,1',
+            leftQueueText: '2,2,2,2',
+            rightQueueText: '3,3,3,3',
+            vehicleTableText: table,
+            beamWidth: '16',
+            branchLimit: '8'
+          });
+
+          equal(result.status, 'solved', '完整求解应成功');
+          equal(result.path, [1, 2, 3], '左侧先补充时应按红、黄、蓝开走');
+          equal(result.proof[0].belt, [2, 2, 2, 2], '第一步红车开走后应先由左侧队列补满传送带');
+          equal(result.proof[0].leftQueue, [], '第一步后左侧队列应先被清空');
+          equal(result.proof[0].rightQueue, [3, 3, 3, 3], '左侧未清空前不应消耗右侧队列');
+          equal(result.proof[1].belt, [3, 3, 3, 3], '第二步黄车开走后才应开始使用右侧队列');
+        });
+
+        test('完整求解器支持竖线分隔的三段乘客队列', () => {
+          const table = [
+            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+            '1\t1\t4\t0\t\t',
+            '2\t2\t4\t0\t\t',
+            '3\t3\t4\t0\t\t'
+          ].join('\n');
+
+          const result = core.solveVehiclePath(core.createInitialState(), {
+            conveyorCapacity: '4',
+            beltQueueText: '1|1|1|1',
+            leftQueueText: '2|2|2|2',
+            rightQueueText: '3|3|3|3',
+            vehicleTableText: table,
+            beamWidth: '16',
+            branchLimit: '8'
+          });
+
+          equal(result.errors, [], '竖线分隔队列不应产生解析错误');
+          equal(result.status, 'solved', '竖线分隔队列也应可求解');
+          equal(result.path, [1, 2, 3], '竖线分隔队列应保持左侧优先补充顺序');
+        });
+
+        test('关卡求解器可单独导出点击顺序', () => {
+          const state = core.createInitialState();
+          const resultState = core.runPathSolveState(core.setPathSolveInput(state, {
+            conveyorCapacity: '4',
+            beltQueueText: '1,1,1,1',
+            leftQueueText: '2,2,2,2',
+            rightQueueText: '3,3,3,3',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t1\t4\t0\t\t',
+              '2\t2\t4\t0\t\t',
+              '3\t3\t4\t0\t\t'
+            ].join('\n'),
+            beamWidth: '16',
+            branchLimit: '8'
+          }));
+
+          equal(core.getPathSolveClickSequenceText(resultState.pathSolve), '1,2,3', '应能单独导出求解点击顺序');
+        });
+
+        test('关卡求解报告区分候选截断和失败', () => {
+          const report = core.getPathSolveReportText({
+            result: {
+              status: 'solved',
+              path: [1],
+              finalBelt: [],
+              finalLeftQueue: [],
+              finalRightQueue: [],
+              finalSlots: [],
+              search: {
+                expandedStates: 12,
+                beamWidth: 8,
+                branchLimit: 4,
+                truncated: true
+              },
+              errors: [],
+              proof: []
+            }
+          });
+
+          assert(report.includes('候选截断：是（已找到可用解，不代表失败）'), '已解关时应说明截断只是搜索剪枝');
+        });
+
+        test('关卡求解证明报告与立即结算模拟报告同构', () => {
+          const state = core.createInitialState();
+          const resultState = core.runPathSolveState(core.setPathSolveInput(state, {
+            levelName: '第9关',
+            conveyorCapacity: '4',
+            beltQueueText: '1,1,1,1',
+            leftQueueText: '2,2,2,2',
+            rightQueueText: '3,3,3,3',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t1\t4\t0\t\t2',
+              '2\t2\t4\t1\t1\t',
+              '3\t3\t4\t0\t\t'
+            ].join('\n'),
+            beamWidth: '16',
+            branchLimit: '8'
+          }));
+          const report = core.getPathSolveReportText(resultState.pathSolve);
+
+          assert(report.startsWith('# 第9关 关卡求解证明'), '求解报告应使用 Markdown 标题');
+          assert(report.includes('## 输入'), '求解报告应包含输入部分');
+          assert(report.includes('传送带：1,1,1,1'), '求解报告应保存传送带队列');
+          assert(report.includes('左侧队列：2,2,2,2'), '求解报告应保存左侧队列');
+          assert(report.includes('右侧队列：3,3,3,3'), '求解报告应保存右侧队列');
+          assert(report.includes('## 步骤日志'), '求解报告应包含步骤日志部分');
+          assert(report.includes('步骤\t可点击车辆\t点击车辆\t分层车辆id\t结算角色\t路径角色\t进入车位\t上客统计\t开走车辆\t已解除阻挡\t解锁后方车辆\t车位状态\t传送带\t左侧队列\t右侧队列\t剩余车辆\t警告'), '求解报告步骤日志表头应与结算模拟同构并保留求解字段');
+          assert(report.includes('#1红色4\tL0:#1'), '求解报告步骤应标注车辆展示名和分层 id');
+          assert(report.includes('## 总览'), '求解报告应包含总览部分');
+          assert(report.includes('状态：solved'), '总览应包含求解状态');
+          assert(report.includes('点击顺序：1,2,3'), '总览应包含点击顺序');
+          assert(report.includes('总点击数：3'), '总览应包含总点击数');
+          assert(report.includes('开走车辆数：3'), '总览应包含开走车辆数');
+          assert(report.includes('停车场剩余车辆：无'), '总览应包含停车场剩余车辆');
+          assert(report.includes('最终车位：空'), '总览应包含最终车位');
+          assert(report.includes('搜索统计：展开'), '总览应包含搜索统计');
+          assert(report.includes('候选截断：'), '总览应包含候选截断');
+        });
+
+        test('关卡求解失败报告仍保留已搜索步骤日志', () => {
+          const report = core.getPathSolveReportText({
+            levelName: '失败复盘',
+            conveyorCapacity: '4',
+            beltQueueText: '1,1',
+            leftQueueText: '',
+            rightQueueText: '',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t1\t4\t0\t\t'
+            ].join('\n'),
+            result: {
+              status: 'search-failed',
+              path: [1],
+              finalBelt: [1, 1],
+              finalLeftQueue: [],
+              finalRightQueue: [],
+              finalSlots: [{ vehicleId: 1, colorValue: 1, capacity: 4, remaining: 2 }, null, null, null],
+              search: {
+                expandedStates: 1,
+                beamWidth: 1,
+                branchLimit: 1,
+                truncated: true
+              },
+              errors: ['搜索资源内未保留可继续状态'],
+              proof: [{
+                step: 1,
+                clickableVehicleIds: [1],
+                clickedVehicleId: 1,
+                enteredSlot: 1,
+                consumption: [{ vehicleId: 1, count: 2 }],
+                departedVehicleIds: [],
+                clearedFrontVehicleIds: [],
+                unlockedVehicleIds: [],
+                remainingVehicleIds: [],
+                slots: [{ vehicleId: 1, colorValue: 1, capacity: 4, remaining: 2 }, null, null, null],
+                belt: [],
+                leftQueue: [],
+                rightQueue: [],
+                warnings: []
+              }]
+            }
+          });
+
+          assert(report.includes('1\t#1红色4'), '失败报告也应保留已执行的步骤日志');
+          assert(report.includes('错误\t搜索资源内未保留可继续状态'), '失败报告步骤日志应保留错误行');
+          assert(report.includes('失败原因：搜索资源内未保留可继续状态'), '失败原因应进入总览');
+          assert(report.includes('候选截断：是（未找到完整解，可能需要提高 Beam/Branch 或调整队列）'), '失败截断应给出下一步建议');
+        });
+
+        test('关卡求解失败报告诊断满车位死锁', () => {
+          const report = core.getPathSolveReportText({
+            levelName: '满车位死锁',
+            conveyorCapacity: '4',
+            beltQueueText: '3,3,3,3',
+            leftQueueText: '',
+            rightQueueText: '1,1,2,2',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t1\t4\t0\t\t',
+              '2\t2\t4\t0\t\t',
+              '3\t1\t4\t0\t\t',
+              '4\t2\t4\t0\t\t'
+            ].join('\n'),
+            result: {
+              status: 'search-failed',
+              path: [1, 2, 3, 4],
+              finalBelt: [3, 3, 3, 3],
+              finalLeftQueue: [],
+              finalRightQueue: [1, 1, 2, 2],
+              finalSlots: [
+                { vehicleId: 1, colorValue: 1, capacity: 4, remaining: 2 },
+                { vehicleId: 2, colorValue: 2, capacity: 4, remaining: 1 },
+                { vehicleId: 3, colorValue: 1, capacity: 4, remaining: 3 },
+                { vehicleId: 4, colorValue: 2, capacity: 4, remaining: 4 }
+              ],
+              search: { expandedStates: 4, beamWidth: 1, branchLimit: 1, truncated: true },
+              errors: ['最终仍有车辆占位'],
+              proof: []
+            }
+          });
+
+          assert(report.includes('失败诊断：车位已满，当前传送带没有可给占位车辆上客的乘客'), '应诊断满车位死锁');
+          assert(report.includes('占位需求：#1红色4 还需 红色(1)x2'), '应列出占位车缺少的颜色和数量');
+          assert(report.includes('传送带阻塞：当前 4 个乘客均无法上客'), '应说明当前传送带无法消耗');
+          assert(report.includes('补充阻塞：左侧队列已空，右侧队列仍有 4 人，但传送带无法消耗时无法继续补入'), '应说明右侧队列无法补入');
         });
 
         test('立即结算模拟器按容量切分传送带并解析点击序列', () => {
@@ -599,6 +965,9 @@
           assert(state.simulation.result.steps.length === 1, '运行后应保存模拟结果');
           const report = core.getStableSimulationReportText(state);
           assert(report.includes('# 第2关 立即结算模拟'), '报告标题错误');
+          assert(report.includes('传送带：1,1,1,1'), '报告输入区应保存传送带乘客队列');
+          assert(report.includes('左侧队列：未填写'), '报告输入区应保存左侧队列');
+          assert(report.includes('右侧队列：3,3'), '报告输入区应保存右侧队列');
           assert(report.includes('步骤\t点击车辆\t分层车辆id\t结算角色\t路径角色\t进入车位\t上客统计'), '报告表头缺失');
           assert(report.includes('#1红色4'), '报告未包含车辆名称');
           state = core.clearStableSimulation(state);
@@ -775,6 +1144,16 @@
           equal(core.getStableSimulationMarkdownFilename(core.createInitialState()), '未命名关卡-立即结算模拟.md', '空关卡 id 文件名错误');
         });
 
+        test('关卡求解器生成 Markdown 文件名', () => {
+          let state = core.createInitialState();
+          state = core.setPathSolveInput(state, {
+            levelName: '第:9/关'
+          });
+
+          equal(core.getPathSolveMarkdownFilename(state), '第_9_关-关卡求解证明.md', '关卡求解 Markdown 文件名未按关卡名清洗');
+          equal(core.getPathSolveMarkdownFilename(core.createInitialState()), '未命名关卡-关卡求解证明.md', '空关卡求解文件名错误');
+        });
+
         test('立即结算模拟器点击车辆函数会追加序列并自动运行', () => {
           let state = core.createInitialState();
           state = core.setStableSimulationInput(state, {
@@ -800,13 +1179,44 @@
           state = core.setStableSimulationScreenshot(state, 'data:image/png;base64,abc');
           state = core.addStableSimulationHotspot(state, { vehicleId: 1, xPercent: 25, yPercent: 40 });
           equal(state.simulation.screenshotDataUrl, 'data:image/png;base64,abc', '截图未保存');
-          equal(state.simulation.hotspots, [{ id: 1, vehicleId: 1, xPercent: 25, yPercent: 40 }], '截图标记未保存');
+          equal(state.simulation.hotspots, [{ id: 1, vehicleId: 1, xPercent: 25, yPercent: 40, isClicked: false }], '截图标记未保存');
           equal(state.simulation.nextHotspotId, 2, '标记 id 未递增');
           state = core.appendStableSimulationHotspotClick(state, 1);
           equal(state.simulation.clickSequenceText, '1', '点击标记未追加车辆 id');
+          equal(state.simulation.hotspots[0].isClicked, true, '点击标记后应记录该标记已选车');
           assert(state.simulation.result && state.simulation.result.steps.length === 1, '点击标记后未自动运行模拟');
           state = core.deleteStableSimulationHotspot(state, 1);
           equal(state.simulation.hotspots, [], '截图标记未删除');
+        });
+
+        test('立即结算模拟器点击截图标记时追加车辆 id 而不是内部标记 id', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n52\t1\t4\t0',
+            clickSequenceText: ''
+          });
+          state = core.addStableSimulationHotspot(state, { vehicleId: 52, xPercent: 25, yPercent: 40 });
+          equal(state.simulation.hotspots[0].id, 1, '测试前置条件：内部标记 id 应为 1');
+          state = core.appendStableSimulationHotspotClick(state, 1);
+          equal(state.simulation.clickSequenceText, '52', '点击截图标记必须追加车辆 id，不应追加内部标记 id');
+          assert(!state.simulation.clickSequenceText.split(',').includes('1'), '点击序列不应混入内部标记 id');
+        });
+
+        test('立即结算模拟器点击无效截图标记不会写入点击顺序', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n52\t1\t4\t0',
+            clickSequenceText: ''
+          });
+          state = core.addStableSimulationHotspot(state, { vehicleId: 42, xPercent: 25, yPercent: 40 });
+          state = core.appendStableSimulationHotspotClick(state, 1);
+          equal(state.simulation.clickSequenceText, '', '无效截图标记不应写入点击顺序');
+          assert(state.simulation.errors.some(error => error.includes('#42')), '无效截图标记应提示不存在于车辆表');
+          equal(state.simulation.hotspots[0].isClicked, false, '无效截图标记不应变为已点击');
         });
 
         test('立即结算模拟器支持撤销、删除步骤和清空点击记录', () => {
@@ -959,10 +1369,10 @@
           assert(result.steps.every(step => step.enteredSlot !== null && step.warnings.length === 0), '拟合结果不应堵车或产生警告');
         });
 
-        test('拟合队列可用竞品车辆表作为无录屏时的路径目标', () => {
+        test('拟合队列输入完整队列并按传送带容量输出三段结果', () => {
           let state = core.createInitialState();
           state = core.setQueueFitInput(state, {
-            levelName: '竞品表目标测试',
+            levelName: '三段拟合测试',
             conveyorCapacity: '4',
             passengerQueueText: '1,1,1,1,2,2,2,2,3,3,3,3',
             vehicleTableText: [
@@ -970,20 +1380,201 @@
               '1\t1\t4\t0\t\t3',
               '2\t2\t4\t0\t\t',
               '3\t3\t4\t1\t1\t'
-            ].join('\n'),
-            targetVehicleTableText: [
-              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
-              '101\t1\t4\t0\t\t102,103,104,105,106,107,108,109',
-              '102\t2\t4\t2\t101\t110,111,112,113',
-              '103\t3\t4\t6\t102\t'
             ].join('\n')
           });
 
           state = core.runQueueFitState(state);
-          equal(state.queueFit.errors, [], '用竞品车辆表目标拟合不应报错');
-          assert(state.queueFit.fittedPassengerQueueText, '应输出拟合后的乘客队列');
-          equal(state.queueFit.targetPathSummary.map(group => group.role), ['核心入口解锁车', '中继大分支解锁车', '深层终点车'], '应保存竞品路径角色目标');
-          equal(state.queueFit.targetLayerSummary.map(group => group.layerLabel), ['L0', 'L2', 'L6'], '应保存竞品分层目标');
+          equal(state.queueFit.errors, [], '三段队列拟合不应报错');
+          assert(state.queueFit.fittedBeltQueueText, '应输出拟合传送带');
+          assert(state.queueFit.fittedRightQueueText, '应输出拟合右侧队列');
+          equal(state.queueFit.fittedBeltQueueText.split(',').filter(Boolean).length, 4, '拟合传送带长度应等于传送带容量');
+          assert(state.queueFit.fittedLeftQueueText, '未填写左侧数量时也应默认输出拟合左侧队列');
+          assert(state.queueFit.fittedRightQueueText, '未填写左侧数量时也应输出拟合右侧队列');
+          equal(
+            [state.queueFit.fittedBeltQueueText, state.queueFit.fittedLeftQueueText, state.queueFit.fittedRightQueueText].filter(Boolean).join(','),
+            state.queueFit.fittedPassengerQueueText,
+            '三段输出拼接后应等于完整拟合队列'
+          );
+        });
+
+        test('拟合队列可按竞品左侧和右侧队列数量拆分结果', () => {
+          let state = core.createInitialState();
+          state = core.setQueueFitInput(state, {
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1,2,2,2,2,3,3,3,3',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度',
+              '1\t1\t4\t0',
+              '2\t2\t4\t0',
+              '3\t3\t4\t0'
+            ].join('\n'),
+            targetRecordText: [
+              '# 竞品队列',
+              '左侧队列：8,8,8,8',
+              '右侧队列：5,5,5,5'
+            ].join('\n')
+          });
+
+          state = core.runQueueFitState(state);
+          equal(state.queueFit.errors, [], '按竞品左右数量拆分拟合不应报错');
+          equal(state.queueFit.fittedBeltQueueText.split(',').filter(Boolean).length, 4, '拟合传送带数量错误');
+          equal(state.queueFit.fittedLeftQueueText.split(',').filter(Boolean).length, 4, '拟合左侧数量应按竞品左侧数量拆分');
+          equal(state.queueFit.fittedRightQueueText.split(',').filter(Boolean).length, 4, '拟合右侧数量错误');
+        });
+
+        test('拟合队列应贴近竞品初始传送带具体颜色', () => {
+          let state = core.createInitialState();
+          state = core.setQueueFitInput(state, {
+            conveyorCapacity: '12',
+            passengerQueueText: '1,1,1,1,2,2,2,2,3,3,3,3,2,2,2,2',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度',
+              '1\t1\t4\t0',
+              '2\t2\t4\t0',
+              '3\t3\t4\t0',
+              '4\t2\t4\t0'
+            ].join('\n'),
+            targetRecordText: [
+              '# 竞品队列',
+              '传送带：2,2,2,2,3,3,3,3,2,2,2,2',
+              '左侧队列：4,4',
+              '右侧队列：7,7'
+            ].join('\n')
+          });
+
+          state = core.runQueueFitState(state);
+          equal(state.queueFit.errors, [], '只有三段队列的竞品输入不应要求步骤日志');
+          const beltColors = new Set(state.queueFit.fittedBeltQueueText.split(',').filter(Boolean));
+          equal(beltColors.size, 2, '拟合传送带颜色种类应贴近竞品初始传送带');
+          equal([...beltColors].sort(), ['2', '3'], '拟合传送带应使用竞品初始传送带里的具体颜色');
+          equal(state.queueFit.fittedBeltQueueText, '2,2,2,2,3,3,3,3,2,2,2,2', '拟合传送带应贴近竞品初始传送带的颜色数量轮廓');
+          equal(
+            [state.queueFit.fittedBeltQueueText, state.queueFit.fittedLeftQueueText, state.queueFit.fittedRightQueueText].filter(Boolean).join(','),
+            state.queueFit.fittedPassengerQueueText,
+            '三段输出拼接后仍应等于完整拟合队列'
+          );
+        });
+
+        test('拟合队列应解析带 Markdown 标记的竞品传送带', () => {
+          let state = core.createInitialState();
+          state = core.setQueueFitInput(state, {
+            conveyorCapacity: '12',
+            passengerQueueText: '1,1,1,1,2,2,2,2,3,3,3,3,2,2,2,2',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度',
+              '1\t1\t4\t0',
+              '2\t2\t4\t0',
+              '3\t3\t4\t0',
+              '4\t2\t4\t0'
+            ].join('\n'),
+            targetRecordText: [
+              '# 竞品队列',
+              '**传送带** ：2,2,2,2,3,3,3,3,2,2,2,2',
+              '| 左侧队列 | 4,4 |',
+              '| 右侧队列 | 7,7 |'
+            ].join('\n')
+          });
+
+          state = core.runQueueFitState(state);
+          equal(state.queueFit.errors, [], '带 Markdown 标记的竞品队列不应报错');
+          equal(state.queueFit.fittedBeltQueueText, '2,2,2,2,3,3,3,3,2,2,2,2', '应从 Markdown 标记中解析竞品传送带目标');
+        });
+
+        test('拟合队列应按车辆结构把竞品颜色映射为我方颜色', () => {
+          let state = core.createInitialState();
+          state = core.setQueueFitInput(state, {
+            conveyorCapacity: '24',
+            passengerQueueText: [
+              '5,5,5,5,5,5,5,5,5,5',
+              '4,4,4,4,4,4,4,4,4,4',
+              '6,6,6,6'
+            ].join(','),
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度',
+              '1\t5\t10\t0',
+              '2\t4\t10\t0',
+              '3\t6\t4\t0'
+            ].join('\n'),
+            targetVehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度',
+              '101\t5\t10\t0',
+              '102\t4\t10\t0',
+              '103\t8\t4\t0'
+            ].join('\n'),
+            targetRecordText: [
+              '# 竞品队列',
+              '传送带：5,5,5,5,5,5,5,5,5,5,8,8,8,8,4,4,4,4,4,4,4,4,4,4'
+            ].join('\n')
+          });
+
+          state = core.runQueueFitState(state);
+          equal(state.queueFit.errors, [], '竞品车辆表颜色映射不应报错');
+          equal(
+            state.queueFit.fittedBeltQueueText,
+            '5,5,5,5,5,5,5,5,5,5,6,6,6,6,4,4,4,4,4,4,4,4,4,4',
+            '竞品颜色 8 应先映射为我方颜色 6 再拟合传送带'
+          );
+        });
+
+        test('拟合队列颜色映射应优先使用结构而不是相同车辆 id', () => {
+          let state = core.createInitialState();
+          state = core.setQueueFitInput(state, {
+            conveyorCapacity: '18',
+            passengerQueueText: [
+              '5,5,5,5',
+              '4,4,4,4,4,4,4,4,4,4',
+              '6,6,6,6'
+            ].join(','),
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t5\t4\t0\t\t',
+              '10\t4\t10\t0\t\t3',
+              '3\t6\t4\t1\t10\t'
+            ].join('\n'),
+            targetVehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t8\t4\t1\t10\t',
+              '10\t4\t10\t0\t\t1',
+              '3\t5\t4\t0\t\t'
+            ].join('\n'),
+            targetRecordText: [
+              '# 竞品队列',
+              '传送带：8,8,8,8,5,5,5,5,4,4,4,4,4,4,4,4,4,4'
+            ].join('\n')
+          });
+
+          state = core.runQueueFitState(state);
+          equal(state.queueFit.errors, [], '结构优先映射不应报错');
+          equal(
+            state.queueFit.fittedBeltQueueText,
+            '6,6,6,6,5,5,5,5,4,4,4,4,4,4,4,4,4,4',
+            '竞品 #1 虽与我方 #1 同座位，但应按结构映射到我方 #3 的颜色 6'
+          );
+        });
+
+        test('拟合分数不应被传送带颜色差距惩罚拉成负数', () => {
+          let state = core.createInitialState();
+          state = core.setQueueFitInput(state, {
+            conveyorCapacity: '12',
+            passengerQueueText: '1,1,1,1,2,2,2,2,3,3,3,3',
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度',
+              '1\t1\t4\t0',
+              '2\t2\t4\t0',
+              '3\t3\t4\t0'
+            ].join('\n'),
+            targetRecordText: [
+              '# 竞品队列',
+              '传送带：9,9,9,9,9,9,9,9,9,9,9,9',
+              '左侧队列：',
+              '右侧队列：'
+            ].join('\n')
+          });
+
+          state = core.runQueueFitState(state);
+          equal(state.queueFit.errors, [], '目标传送带颜色无法复刻时仍应输出最接近的可解队列');
+          assert(state.queueFit.fittedPassengerQueueText, '应输出拟合队列');
+          assert(state.queueFit.score >= 0, '拟合分数不应显示为负数');
         });
 
         test('核心状态操作不突变输入状态', () => {
@@ -1136,7 +1727,7 @@
         test('工作台包含六阶段导航、viewport 和保存反馈状态区域', () => {
           assert(app, 'QueueRecorderApp 不存在');
           const stageButtons = [...appDocument.querySelectorAll('.stage-button[data-stage]')];
-          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'simulation', 'queueFit'], '六个导航按钮错误');
+          equal(stageButtons.map(button => button.dataset.stage), ['conveyor', 'left', 'right', 'configs', 'simulation', 'queueFit', 'pathSolve'], '七个导航按钮错误');
           assert(!appDocument.querySelector('.stage-button[data-stage="parking"]'), '不应再显示车位记录入口');
           assert(!appDocument.querySelector('.stage-button[data-stage="script"]'), '不应再显示剧本还原入口');
           equal(app.getState().activeStage, 'conveyor', '初始活动阶段应为 conveyor');
@@ -1292,10 +1883,11 @@
           equal(app.getState().activeStage, 'simulation', '未进入立即结算模拟页面');
           equal(appDocument.querySelector('.workspace-title').textContent, '立即结算模拟', '页面标题错误');
           equal(appDocument.querySelector('.count-card strong').textContent, '0', '未运行时步骤数应为 0');
-          const fields = ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText'];
+          const fields = ['levelName', 'conveyorCapacity', 'beltQueueText', 'leftQueueText', 'rightQueueText', 'vehicleTableText', 'clickSequenceText'];
           fields.forEach(field => {
             assert(appDocument.querySelector(`.simulation-input[data-simulation-field="${field}"]`), `缺少 ${field} 输入控件`);
           });
+          assert(!appDocument.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]'), '立即结算模拟不应再使用单条乘客队列输入');
           const csvFileInput = appDocument.querySelector('#simulationVehicleCsvFile');
           assert(csvFileInput && csvFileInput.accept.includes('.csv'), '立即结算模拟车辆表 CSV 文件导入控件缺失');
           const recordMdInput = appDocument.querySelector('#simulationRecordMdFiles');
@@ -1308,7 +1900,9 @@
           assert(!appDocument.querySelector('[data-action="fit-stable-simulation-queue"]'), '立即结算模拟不应包含拟合队列按钮');
 
           appDocument.querySelector('.simulation-input[data-simulation-field="conveyorCapacity"]').value = '4';
-          appDocument.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]').value = '1,1,1,1,3,3';
+          appDocument.querySelector('.simulation-input[data-simulation-field="beltQueueText"]').value = '1,1,1,1';
+          appDocument.querySelector('.simulation-input[data-simulation-field="leftQueueText"]').value = '3,3';
+          appDocument.querySelector('.simulation-input[data-simulation-field="rightQueueText"]').value = '';
           appDocument.querySelector('.simulation-input[data-simulation-field="vehicleTableText"]').value = '车辆id\t车颜色\t车座位\t深度\n1\t1\t4\t0';
           appDocument.querySelector('.simulation-input[data-simulation-field="clickSequenceText"]').value = '1';
           appDocument.querySelector('[data-action="run-stable-simulation"]').click();
@@ -1362,7 +1956,9 @@
         test('立即结算模拟页面可点击车辆按钮追加序列并显示当前状态', () => {
           appDocument.querySelector('.stage-button[data-stage="simulation"]').click();
           appDocument.querySelector('.simulation-input[data-simulation-field="conveyorCapacity"]').value = '4';
-          appDocument.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]').value = '1,1,1,1,3,3';
+          appDocument.querySelector('.simulation-input[data-simulation-field="beltQueueText"]').value = '1,1,1,1';
+          appDocument.querySelector('.simulation-input[data-simulation-field="leftQueueText"]').value = '3,3';
+          appDocument.querySelector('.simulation-input[data-simulation-field="rightQueueText"]').value = '';
           appDocument.querySelector('.simulation-input[data-simulation-field="vehicleTableText"]').value = '车辆id\t车颜色\t车座位\t深度\n1\t1\t4\t0\n2\t3\t6\t0';
           appDocument.querySelector('[data-action="run-stable-simulation"]').click();
 
@@ -1382,15 +1978,88 @@
           appDocument.querySelector('.stage-button[data-stage="queueFit"]').click();
           equal(app.getState().activeStage, 'queueFit', '未进入拟合队列页面');
           equal(appDocument.querySelector('.workspace-title').textContent, '拟合队列', '拟合队列页面标题错误');
-          ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'targetRecordText', 'targetVehicleTableText'].forEach(field => {
+          ['levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'targetVehicleTableText', 'targetRecordText'].forEach(field => {
             assert(appDocument.querySelector(`.queue-fit-input[data-queue-fit-field="${field}"]`), `缺少拟合 ${field} 输入控件`);
           });
+          assert(!appDocument.querySelector('.queue-fit-input[data-queue-fit-field="leftQueueLength"]'), '拟合页不应手动输入左侧队列数量');
+          assert(!appDocument.querySelector('.queue-fit-input[data-queue-fit-field="beltQueueText"]'), '拟合页输入不应拆成传送带');
+          assert(!appDocument.querySelector('.queue-fit-input[data-queue-fit-field="leftQueueText"]'), '拟合页输入不应拆成左侧队列');
+          assert(!appDocument.querySelector('.queue-fit-input[data-queue-fit-field="rightQueueText"]'), '拟合页输入不应拆成右侧队列');
           const recordMdInput = appDocument.querySelector('#queueFitRecordMdFile');
           assert(recordMdInput && recordMdInput.accept.includes('.md'), '缺少竞品结算模拟记录 MD 导入控件');
+          assert(!appDocument.querySelector('.queue-fit-input[data-queue-fit-field="targetPassengerQueueText"]'), '拟合页不应再包含竞品乘客队列输入');
           const targetVehicleCsvInput = appDocument.querySelector('#queueFitTargetVehicleCsvFile');
-          assert(targetVehicleCsvInput && targetVehicleCsvInput.accept.includes('.csv'), '缺少竞品车辆数据表 CSV 导入控件');
+          assert(targetVehicleCsvInput && targetVehicleCsvInput.accept.includes('.csv'), '缺少竞品车辆表 CSV 导入控件');
           assert(appDocument.querySelector('[data-action="run-queue-fit"]'), '缺少运行拟合按钮');
           assert(appDocument.querySelector('.queue-fit-output'), '缺少拟合输出区');
+          assert(appDocument.querySelector('.queue-fit-output-belt'), '缺少拟合传送带输出');
+          assert(appDocument.querySelector('.queue-fit-output-left'), '缺少拟合左侧队列输出');
+          assert(appDocument.querySelector('.queue-fit-output-right'), '缺少拟合右侧队列输出');
+        });
+
+        test('关卡求解页面可输入车辆表和乘客队列并运行搜索', () => {
+          appDocument.querySelector('.stage-button[data-stage="pathSolve"]').click();
+          equal(app.getState().activeStage, 'pathSolve', '未进入路径求解页面');
+          equal(appDocument.querySelector('.workspace-title').textContent, '关卡求解', '关卡求解页面标题错误');
+          ['levelName', 'conveyorCapacity', 'beltQueueText', 'leftQueueText', 'rightQueueText', 'vehicleTableText', 'clickSequenceText', 'beamWidth', 'branchLimit'].forEach(field => {
+            assert(appDocument.querySelector(`.path-solve-input[data-path-solve-field="${field}"]`), `缺少路径求解 ${field} 输入控件`);
+          });
+          const pathSolveCsvInput = appDocument.querySelector('#pathSolveVehicleCsvFile');
+          assert(pathSolveCsvInput && pathSolveCsvInput.accept.includes('.csv'), '关卡求解页缺少车辆数据表 CSV 导入控件');
+          assert(appDocument.querySelector('[data-action="copy-path-solver-clicks"]'), '关卡求解页缺少复制点击顺序按钮');
+          assert(appDocument.querySelector('[data-action="download-path-solver-md"]'), '关卡求解页缺少导出 MD 按钮');
+          const pathSolveStatus = appDocument.querySelector('.path-solve-status');
+          assert(pathSolveStatus, '关卡求解页缺少搜索状态显示');
+          assert(pathSolveStatus.textContent.includes('尚未运行求解'), '关卡求解状态初始文案错误');
+
+          appDocument.querySelector('.path-solve-input[data-path-solve-field="levelName"]').value = '第9关';
+          appDocument.querySelector('.path-solve-input[data-path-solve-field="conveyorCapacity"]').value = '4';
+          appDocument.querySelector('.path-solve-input[data-path-solve-field="beltQueueText"]').value = '3,3,3,3';
+          appDocument.querySelector('.path-solve-input[data-path-solve-field="leftQueueText"]').value = '1,1,1,1';
+          appDocument.querySelector('.path-solve-input[data-path-solve-field="rightQueueText"]').value = '2,2,2,2';
+          appDocument.querySelector('.path-solve-input[data-path-solve-field="beamWidth"]').value = '16';
+          appDocument.querySelector('.path-solve-input[data-path-solve-field="branchLimit"]').value = '8';
+          appDocument.querySelector('.path-solve-input[data-path-solve-field="vehicleTableText"]').value = [
+            '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+            '28\t1\t4\t3\t44\t',
+            '41\t2\t4\t3\t44\t',
+            '44\t3\t4\t0\t\t28,41'
+          ].join('\n');
+          appDocument.querySelector('[data-action="run-path-solver"]').click();
+
+          const report = appDocument.querySelector('.path-solve-report').textContent;
+          assert(report.includes('状态：solved'), '路径求解应成功');
+          assert(report.includes('点击顺序：44,'), '路径应先点击 #44');
+          assert(report.includes('可点击车辆'), '路径证明应包含可点击车辆');
+
+          let capturedBlob = null;
+          let capturedDownload = '';
+          let capturedHref = '';
+          let revokedUrl = '';
+          const originalCreateObjectURL = appWindow.URL.createObjectURL;
+          const originalRevokeObjectURL = appWindow.URL.revokeObjectURL;
+          const originalAnchorClick = appWindow.HTMLAnchorElement.prototype.click;
+          appWindow.URL.createObjectURL = blob => {
+            capturedBlob = blob;
+            return 'blob:path-solver-report';
+          };
+          appWindow.URL.revokeObjectURL = url => {
+            revokedUrl = url;
+          };
+          appWindow.HTMLAnchorElement.prototype.click = function click() {
+            capturedDownload = this.download;
+            capturedHref = this.href;
+          };
+          appDocument.querySelector('[data-action="download-path-solver-md"]').click();
+          appWindow.URL.createObjectURL = originalCreateObjectURL;
+          appWindow.URL.revokeObjectURL = originalRevokeObjectURL;
+          appWindow.HTMLAnchorElement.prototype.click = originalAnchorClick;
+          assert(capturedBlob instanceof appWindow.Blob, '关卡求解导出 MD 未生成 Blob');
+          assert(capturedBlob.type.includes('text/markdown'), '关卡求解导出 Blob 类型不是 Markdown');
+          equal(capturedBlob.size, new appWindow.Blob([report], { type: 'text/markdown;charset=utf-8' }).size, '关卡求解导出内容大小应与报告文本一致');
+          equal(capturedDownload, '第9关-关卡求解证明.md', '关卡求解导出文件名错误');
+          equal(capturedHref, 'blob:path-solver-report', '关卡求解导出未使用创建的对象 URL');
+          equal(revokedUrl, 'blob:path-solver-report', '关卡求解导出后未释放对象 URL');
         });
 
         test('立即结算模拟页面支持点击截图标记记录选车', () => {
@@ -1424,7 +2093,7 @@
             clientX: 50,
             clientY: 40
           }));
-          equal(app.getState().simulation.hotspots, [{ id: 1, vehicleId: 1, xPercent: 25, yPercent: 40 }], '截图点击未新增车辆标记');
+          equal(app.getState().simulation.hotspots, [{ id: 1, vehicleId: 1, xPercent: 25, yPercent: 40, isClicked: false }], '截图点击未新增车辆标记');
 
           const marker = appDocument.querySelector('[data-action="append-stable-simulation-hotspot-click"][data-hotspot-id="1"]');
           assert(marker, '未渲染可点击车辆标记');
@@ -1441,10 +2110,49 @@
           equal(app.getState().simulation.hotspots, [], '删除截图标记失败');
         });
 
+        test('立即结算模拟页面手动新增截图标记时不因同 id 点击记录直接打勾', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1,3,3',
+            vehicleTableText: '车辆id\t车颜色\t车座位\t深度\n1\t1\t4\t0\n2\t3\t6\t0',
+            clickSequenceText: '1'
+          });
+          state = core.setStableSimulationScreenshot(state, 'data:image/png;base64,abc');
+          app.updateState({ ...state, activeStage: 'simulation' });
+
+          appDocument.querySelector('#simulationManualVehicleId').value = '1';
+          const wrap = appDocument.querySelector('.stable-simulation-screenshot-wrap');
+          wrap.getBoundingClientRect = () => ({
+            left: 0,
+            top: 0,
+            width: 200,
+            height: 100,
+            right: 200,
+            bottom: 100,
+            x: 0,
+            y: 0,
+            toJSON: () => ({})
+          });
+          wrap.dispatchEvent(new appWindow.MouseEvent('click', {
+            bubbles: true,
+            clientX: 50,
+            clientY: 40
+          }));
+
+          const marker = appDocument.querySelector('[data-action="append-stable-simulation-hotspot-click"][data-hotspot-id="1"]');
+          assert(marker, '未渲染新增截图标记');
+          assert(marker.textContent.includes('#1'), '新增截图标记不应直接显示打勾');
+          assert(!marker.disabled, '新增截图标记不应直接禁用');
+          equal(app.getState().simulation.hotspots[0].isClicked, false, '新增截图标记应保持未点击状态');
+        });
+
         test('立即结算模拟页面支持撤销、删除步骤和清空点击记录', () => {
           appDocument.querySelector('.stage-button[data-stage="simulation"]').click();
           appDocument.querySelector('.simulation-input[data-simulation-field="conveyorCapacity"]').value = '4';
-          appDocument.querySelector('.simulation-input[data-simulation-field="passengerQueueText"]').value = '1,1,1,1,3,3';
+          appDocument.querySelector('.simulation-input[data-simulation-field="beltQueueText"]').value = '1,1,1,1';
+          appDocument.querySelector('.simulation-input[data-simulation-field="leftQueueText"]').value = '3,3';
+          appDocument.querySelector('.simulation-input[data-simulation-field="rightQueueText"]').value = '';
           appDocument.querySelector('.simulation-input[data-simulation-field="vehicleTableText"]').value = '车辆id\t车颜色\t车座位\t深度\n1\t1\t4\t0\n2\t3\t6\t0';
           appDocument.querySelector('.simulation-input[data-simulation-field="clickSequenceText"]').value = '';
           appDocument.querySelector('[data-action="run-stable-simulation"]').click();
