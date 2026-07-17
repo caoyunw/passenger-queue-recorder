@@ -154,6 +154,24 @@
     return counts;
   }
 
+  function countValuesObject(values) {
+    const inspection = inspectDenseArrayEntries(values);
+    if (!inspection.dense
+      || inspection.entries.some(entry => !isNonNegativeInteger(entry.value))) {
+      return {};
+    }
+
+    const counts = new Map();
+    inspection.entries.forEach(entry => {
+      counts.set(entry.value, (counts.get(entry.value) || 0) + 1);
+    });
+    const result = {};
+    [...counts.keys()].sort((left, right) => left - right).forEach(colorValue => {
+      result[colorValue] = counts.get(colorValue);
+    });
+    return result;
+  }
+
   const INVALID_JSON_DETAIL = Symbol('invalid-json-detail');
   const FIXED_ISSUE_KEYS = new Set(['category', 'code', 'message']);
 
@@ -2342,6 +2360,439 @@
     return verifierResult(errors, trace, pressureProof, occupyProof, pressureCurve);
   }
 
+  const DEFAULT_SEARCH_BUDGET = 20000;
+  const DEFAULT_SEARCH_SEED = 1;
+  const DEFAULT_ADVANCE_LIMIT = 256;
+  const MAX_ADVANCE_LIMIT = 256;
+
+  function cloneSearchValue(value) {
+    const cloned = cloneJsonSafeDetail(value);
+    return cloned === INVALID_JSON_DETAIL ? null : cloned;
+  }
+
+  function cloneSearchResult(result) {
+    const cloned = cloneSearchValue(result);
+    return cloned && isPlainJsonObject(cloned)
+      ? cloned
+      : {
+        status: 'input_error',
+        layout: null,
+        errors: [createIssue(
+          'input_error',
+          'invalid_search_result',
+          'Search could not produce a JSON-safe result'
+        )],
+        expanded: 0,
+        budget: DEFAULT_SEARCH_BUDGET
+      };
+  }
+
+  function readSearchIntegerOption(options, key, fallback, predicate) {
+    const property = readOwnDataValue(options, key);
+    return property.present && predicate(property.value) ? property.value : fallback;
+  }
+
+  function sortedColors(counts) {
+    return [...counts.keys()].sort((left, right) => left - right);
+  }
+
+  function takeColor(counts, colorValue, count) {
+    const available = counts.get(colorValue) || 0;
+    if (available < count) return false;
+    if (available === count) counts.delete(colorValue);
+    else counts.set(colorValue, available - count);
+    return true;
+  }
+
+  function appendAvailableColors(target, counts, needed, predicate) {
+    let remaining = needed;
+    for (const colorValue of sortedColors(counts)) {
+      if (remaining < 1) break;
+      if (!predicate(colorValue)) continue;
+      const available = counts.get(colorValue) || 0;
+      const taken = Math.min(available, remaining);
+      for (let index = 0; index < taken; index += 1) target.push(colorValue);
+      takeColor(counts, colorValue, taken);
+      remaining -= taken;
+    }
+    return remaining;
+  }
+
+  function expandRemainingCounts(counts) {
+    const values = [];
+    sortedColors(counts).forEach(colorValue => {
+      const count = counts.get(colorValue) || 0;
+      for (let index = 0; index < count; index += 1) values.push(colorValue);
+    });
+    return values;
+  }
+
+  function regionConflict(code, message, detail) {
+    return {
+      layout: null,
+      errors: [createIssue('constraint_conflict', code, message, detail)]
+    };
+  }
+
+  function buildRegionSeed(model, compiled) {
+    const passengerProperty = readOwnDataValue(model, 'passengers');
+    const passengerInspection = inspectDenseNonNegativeIntegerArray(passengerProperty.value);
+    const capacityProperty = readOwnDataValue(model, 'conveyorCapacity');
+    if (!passengerProperty.present
+      || !passengerInspection.valid
+      || !isPositiveInteger(capacityProperty.value)) {
+      return regionConflict(
+        'invalid_region_input',
+        'Directed regions require valid passengers and conveyor capacity'
+      );
+    }
+
+    const remainingCounts = countValues(passengerInspection.values);
+    const belt = [];
+    const initialExactColors = new Set();
+    for (const constraint of compiled.initialOccupy) {
+      initialExactColors.add(constraint.colorValue);
+      if (!takeColor(remainingCounts, constraint.colorValue, constraint.count)) {
+        return regionConflict(
+          'insufficient_initial_occupy_color',
+          `Color ${String(constraint.colorValue)} has too few passengers for its initial region`,
+          {
+            vehicleId: constraint.vehicleId,
+            colorValue: constraint.colorValue,
+            required: constraint.count
+          }
+        );
+      }
+      for (let index = 0; index < constraint.count; index += 1) {
+        belt.push(constraint.colorValue);
+      }
+    }
+
+    const preview = [];
+    const previewExactColors = new Set();
+    for (const constraint of compiled.rightPreview) {
+      previewExactColors.add(constraint.colorValue);
+      if (!takeColor(remainingCounts, constraint.colorValue, constraint.count)) {
+        return regionConflict(
+          'insufficient_right_preview_color',
+          `Color ${String(constraint.colorValue)} has too few passengers for its right preview`,
+          {
+            vehicleId: constraint.vehicleId,
+            colorValue: constraint.colorValue,
+            required: constraint.count
+          }
+        );
+      }
+      for (let index = 0; index < constraint.count; index += 1) {
+        preview.push(constraint.colorValue);
+      }
+    }
+
+    const pressureColors = new Set();
+    const base = validateBaseInput(model);
+    compiled.pressureLinks.forEach(link => {
+      const vehicle = base.vehiclesById.get(link.vehicleId);
+      const color = readOwnDataValue(vehicle, 'colorValue');
+      if (color.present && isNonNegativeInteger(color.value)) pressureColors.add(color.value);
+    });
+
+    let beltNeeded = capacityProperty.value - belt.length;
+    beltNeeded = appendAvailableColors(
+      belt,
+      remainingCounts,
+      beltNeeded,
+      colorValue => !initialExactColors.has(colorValue) && !pressureColors.has(colorValue)
+    );
+    beltNeeded = appendAvailableColors(
+      belt,
+      remainingCounts,
+      beltNeeded,
+      colorValue => !initialExactColors.has(colorValue) && pressureColors.has(colorValue)
+    );
+    if (beltNeeded > 0) {
+      return regionConflict(
+        'initial_region_filler_unavailable',
+        'The exact initial region leaves too few eligible passengers to fill the belt',
+        { missing: beltNeeded }
+      );
+    }
+
+    let previewNeeded = 10 - preview.length;
+    previewNeeded = appendAvailableColors(
+      preview,
+      remainingCounts,
+      previewNeeded,
+      colorValue => !previewExactColors.has(colorValue)
+    );
+    if (previewNeeded > 0) {
+      return regionConflict(
+        'preview_region_filler_unavailable',
+        'The exact preview leaves too few eligible passengers to fill ten positions',
+        { missing: previewNeeded }
+      );
+    }
+
+    const reserve = expandRemainingCounts(remainingCounts);
+    return {
+      belt,
+      preview,
+      reserve,
+      leftLength: 0,
+      errors: []
+    };
+  }
+
+  function fingerprintCandidate(candidate) {
+    return `${candidate.leftLength}|${candidate.reserve.join(',')}`;
+  }
+
+  function makeCandidateLayout(seed, candidate) {
+    return {
+      belt: [...seed.belt],
+      left: candidate.reserve.slice(0, candidate.leftLength),
+      right: [...seed.preview, ...candidate.reserve.slice(candidate.leftLength)]
+    };
+  }
+
+  function moveCandidateColor(candidate, colorValue, direction) {
+    const moved = candidate.reserve.filter(value => value === colorValue);
+    if (moved.length === 0 || moved.length === candidate.reserve.length) return null;
+    const kept = candidate.reserve.filter(value => value !== colorValue);
+    const reserve = direction === 'earlier'
+      ? [...moved, ...kept]
+      : [...kept, ...moved];
+    if (reserve.every((value, index) => value === candidate.reserve[index])) return null;
+    return { reserve, leftLength: candidate.leftLength };
+  }
+
+  function createCandidateNeighbors(candidate, verification, seed) {
+    const neighbors = [];
+    const directedKeys = new Set();
+    verification.errors.forEach(error => {
+      const color = readOwnDataValue(error, 'colorValue');
+      const hint = readOwnDataValue(error, 'hint');
+      if (!color.present || !isNonNegativeInteger(color.value) || !hint.present) return;
+      let direction = null;
+      if (hint.value === 'move_color_later') direction = 'later';
+      if (hint.value === 'move_color_earlier'
+        || hint.value === 'repair_initial_occupy'
+        || hint.value === 'repair_later_occupy') {
+        direction = 'earlier';
+      }
+      if (direction === null) return;
+      const key = `${color.value}:${direction}`;
+      if (directedKeys.has(key)) return;
+      directedKeys.add(key);
+      const moved = moveCandidateColor(candidate, color.value, direction);
+      if (moved !== null) neighbors.push(moved);
+    });
+
+    if (candidate.leftLength > 0) {
+      neighbors.push({
+        reserve: [...candidate.reserve],
+        leftLength: candidate.leftLength - 1
+      });
+    }
+    if (candidate.leftLength < candidate.reserve.length) {
+      neighbors.push({
+        reserve: [...candidate.reserve],
+        leftLength: candidate.leftLength + 1
+      });
+    }
+
+    if (neighbors.length < 2) return neighbors;
+    const offset = (seed - 1 + neighbors.length) % neighbors.length;
+    return [...neighbors.slice(offset), ...neighbors.slice(0, offset)];
+  }
+
+  function createImmediateSearchSession(result) {
+    const terminal = cloneSearchResult(result);
+    return Object.freeze({
+      advance() {
+        return cloneSearchResult(terminal);
+      }
+    });
+  }
+
+  function classifyCompileFailure(errors) {
+    return errors.some(error => readOwnDataValue(error, 'category').value === 'input_error')
+      ? 'input_error'
+      : 'constraint_conflict';
+  }
+
+  function snapshotDenseSearchArray(value, mapEntry = entry => entry.value) {
+    const inspection = inspectDenseArrayEntries(value);
+    if (!inspection.dense) return null;
+    return inspection.entries.map(mapEntry);
+  }
+
+  function snapshotSearchVehicle(value) {
+    if (!isPlainJsonObject(value)) return null;
+    const front = snapshotDenseSearchArray(readOwnDataValue(value, 'frontVehicleIds').value);
+    const back = snapshotDenseSearchArray(readOwnDataValue(value, 'backVehicleIds').value);
+    return {
+      id: readOwnDataValue(value, 'id').value,
+      colorValue: readOwnDataValue(value, 'colorValue').value,
+      capacity: readOwnDataValue(value, 'capacity').value,
+      frontVehicleIds: front,
+      backVehicleIds: back
+    };
+  }
+
+  function snapshotSearchModel(value) {
+    if (!isPlainJsonObject(value)) return null;
+    const passengers = snapshotDenseSearchArray(readOwnDataValue(value, 'passengers').value);
+    const vehicles = snapshotDenseSearchArray(
+      readOwnDataValue(value, 'vehicles').value,
+      entry => snapshotSearchVehicle(entry.value)
+    );
+    const path = snapshotDenseSearchArray(readOwnDataValue(value, 'path').value);
+    const annotations = snapshotDenseSearchArray(
+      readOwnDataValue(value, 'annotations').value,
+      entry => readCompilerAnnotation(entry.value)
+    );
+    return {
+      conveyorCapacity: readOwnDataValue(value, 'conveyorCapacity').value,
+      passengers,
+      vehicles,
+      path,
+      annotations
+    };
+  }
+
+  function createSearchSession(inputModel, options = {}) {
+    const budget = readSearchIntegerOption(
+      options,
+      'budget',
+      DEFAULT_SEARCH_BUDGET,
+      isPositiveInteger
+    );
+    const seed = readSearchIntegerOption(
+      options,
+      'seed',
+      DEFAULT_SEARCH_SEED,
+      isNonNegativeInteger
+    );
+    const safeModel = snapshotSearchModel(inputModel);
+    let compiled;
+    try {
+      compiled = compileConstraints(safeModel);
+    } catch {
+      compiled = compileConstraints(null);
+    }
+    if (compiled.errors.length > 0) {
+      return createImmediateSearchSession({
+        status: classifyCompileFailure(compiled.errors),
+        layout: null,
+        errors: compiled.errors,
+        expanded: 0,
+        budget
+      });
+    }
+
+    const regionSeed = buildRegionSeed(safeModel, compiled);
+    if (regionSeed.errors.length > 0) {
+      return createImmediateSearchSession({
+        status: 'constraint_conflict',
+        layout: null,
+        errors: regionSeed.errors,
+        expanded: 0,
+        budget
+      });
+    }
+
+    const frontier = [{
+      reserve: [...regionSeed.reserve],
+      leftLength: regionSeed.leftLength
+    }];
+    const seen = new Set([fingerprintCandidate(frontier[0])]);
+    let expanded = 0;
+    let lastErrors = [];
+    let terminal = null;
+
+    function finish(result) {
+      terminal = cloneSearchResult(result);
+      return cloneSearchResult(terminal);
+    }
+
+    function advance(requestedLimit = DEFAULT_ADVANCE_LIMIT) {
+      if (terminal !== null) return cloneSearchResult(terminal);
+      const limit = isPositiveInteger(requestedLimit)
+        ? Math.min(requestedLimit, MAX_ADVANCE_LIMIT)
+        : DEFAULT_ADVANCE_LIMIT;
+      let processed = 0;
+
+      while (processed < limit && expanded < budget && frontier.length > 0) {
+        const candidate = frontier.shift();
+        const layout = makeCandidateLayout(regionSeed, candidate);
+        let verification;
+        try {
+          verification = verify(safeModel, compiled, layout);
+        } catch {
+          verification = {
+            errors: [createIssue(
+              'input_error',
+              'candidate_verification_failed',
+              'Candidate verification failed safely'
+            )]
+          };
+        }
+        expanded += 1;
+        processed += 1;
+        lastErrors = cloneSearchValue(verification.errors) || [];
+        if (lastErrors.length === 0) {
+          return finish({
+            status: 'success',
+            layout,
+            verification,
+            errors: [],
+            expanded,
+            budget
+          });
+        }
+
+        const neighbors = createCandidateNeighbors(candidate, verification, seed);
+        neighbors.forEach(neighbor => {
+          if (neighbor.leftLength < 0 || neighbor.leftLength > neighbor.reserve.length) return;
+          const fingerprint = fingerprintCandidate(neighbor);
+          if (seen.has(fingerprint)) return;
+          seen.add(fingerprint);
+          frontier.push(neighbor);
+        });
+      }
+
+      if (expanded >= budget || frontier.length === 0) {
+        return finish({
+          status: 'budget_exhausted',
+          layout: null,
+          errors: lastErrors,
+          expanded,
+          budget,
+          exhaustedFrontier: frontier.length === 0
+        });
+      }
+      return {
+        status: 'running',
+        layout: null,
+        errors: cloneSearchValue(lastErrors) || [],
+        expanded,
+        budget,
+        frontier: frontier.length
+      };
+    }
+
+    return Object.freeze({ advance });
+  }
+
+  function generate(model, options = {}) {
+    const session = createSearchSession(model, options);
+    let result = session.advance(DEFAULT_ADVANCE_LIMIT);
+    while (result.status === 'running') {
+      result = session.advance(DEFAULT_ADVANCE_LIMIT);
+    }
+    return result;
+  }
+
   global.PressureQueueCore = Object.freeze({
     SETTLEMENT_TARGETS,
     STRENGTH_MODES,
@@ -2354,10 +2805,13 @@
     resolvePreviewStrength,
     syncAnnotations,
     countValues,
+    countValuesObject,
     createIssue,
     validateBaseInput,
     compileConstraints,
     simulate,
-    verify
+    verify,
+    createSearchSession,
+    generate
   });
 }(window));
