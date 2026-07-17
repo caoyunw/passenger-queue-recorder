@@ -1844,20 +1844,81 @@
     }
   }
 
-  function appendUniqueVerifierIssue(errors, issue) {
-    if (!errors.some(existing => verifierJsonEqual(existing, issue))) errors.push(issue);
+  function verifierStableJsonKey(value, ancestors = new WeakSet(), omitMessage = true) {
+    if (value === null) return 'null';
+    if (typeof value === 'string') return `string:${value.length}:${value}`;
+    if (typeof value === 'boolean') return value ? 'boolean:1' : 'boolean:0';
+    if (typeof value === 'number') {
+      if (Number.isNaN(value)) return 'number:nan';
+      if (value === Infinity) return 'number:infinity';
+      if (value === -Infinity) return 'number:-infinity';
+      return `number:${String(value === 0 ? 0 : value)}`;
+    }
+    if (typeof value === 'bigint') return `bigint:${String(value)}`;
+    if (typeof value !== 'object') return `unsupported:${typeof value}`;
+    if (ancestors.has(value)) return 'invalid:cycle';
+
+    let isArray;
+    try {
+      isArray = Array.isArray(value);
+    } catch {
+      return 'invalid:array-check';
+    }
+
+    ancestors.add(value);
+    try {
+      if (isArray) {
+        const inspection = inspectDenseArrayEntries(value);
+        if (!inspection.dense) return 'invalid:array';
+        const items = inspection.entries.map(entry => (
+          entry.value === INVALID_JSON_DETAIL
+            ? 'invalid:array-entry'
+            : verifierStableJsonKey(entry.value, ancestors, false)
+        ));
+        return `array:${items.length}:[${items.join('|')}]`;
+      }
+
+      const entries = verifierJsonObjectEntries(value);
+      if (entries === null) return 'invalid:object';
+      const fields = entries
+        .filter(entry => !omitMessage || entry[0] !== 'message')
+        .map(entry => (
+          `${entry[0].length}:${entry[0]}=${verifierStableJsonKey(entry[1], ancestors, false)}`
+        ));
+      return `object:${fields.length}:{${fields.join('|')}}`;
+    } finally {
+      ancestors.delete(value);
+    }
   }
 
-  function verifierResult(errors, trace, pressureProof, occupyProof, pressureCurve) {
-    const uniqueErrors = [];
-    errors.forEach(error => appendUniqueVerifierIssue(uniqueErrors, error));
-    return { errors: uniqueErrors, trace, pressureProof, occupyProof, pressureCurve };
+  function createVerifierIssueAccumulator() {
+    const values = [];
+    const keys = new Set();
+    return {
+      values,
+      push(issue) {
+        const key = verifierStableJsonKey(issue);
+        if (keys.has(key)) return;
+        keys.add(key);
+        values.push(issue);
+      }
+    };
   }
 
-  function appendMissingBaseIssues(errors, baseErrors) {
+  function verifierResult(errorAccumulator, trace, pressureProof, occupyProof, pressureCurve) {
+    return {
+      errors: errorAccumulator.values,
+      trace,
+      pressureProof,
+      occupyProof,
+      pressureCurve
+    };
+  }
+
+  function appendMissingBaseIssues(errorAccumulator, baseErrors) {
     baseErrors.forEach(error => {
       const cloned = cloneVerifierIssue(error, 'model');
-      appendUniqueVerifierIssue(errors, cloned);
+      errorAccumulator.push(cloned);
     });
   }
 
@@ -1915,13 +1976,13 @@
     const suppliedTraceIssues = readVerifierIssues(suppliedTrace, 'trace');
     const canonicalCompiledIssues = readVerifierIssues(canonicalCompiled, 'compiled');
     const canonicalTraceIssues = readVerifierIssues(canonicalTrace, 'trace');
-    const errors = [];
+    const errors = createVerifierIssueAccumulator();
     [
       ...suppliedCompiledIssues.issues,
       ...suppliedTraceIssues.issues,
       ...canonicalCompiledIssues.issues,
       ...canonicalTraceIssues.issues
-    ].forEach(issue => appendUniqueVerifierIssue(errors, issue));
+    ].forEach(issue => errors.push(issue));
     const pressureProof = [];
     const occupyProof = [];
     const pressureCurve = pressureCurveFromTrace(canonicalTrace);
@@ -2011,7 +2072,7 @@
         || !laterConstraintsMatch
         || !previewConstraintsMatch) {
         compiledStructureValid = false;
-        appendUniqueVerifierIssue(errors, createIssue(
+        errors.push(createIssue(
           'input_error',
           'invalid_compiled_structure',
           'Compiled constraints must exactly match canonical compilation of the model'
@@ -2026,7 +2087,7 @@
           row.clickedVehicleId !== pathInspection.values[index]
         )))) {
       traceStructureValid = false;
-      appendUniqueVerifierIssue(errors, createIssue(
+      errors.push(createIssue(
         'input_error',
         'invalid_trace_structure',
         'Supplied trace must exactly match canonical simulation of the model and layout'

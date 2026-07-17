@@ -73,6 +73,21 @@ function normalFixture() {
   return fixture;
 }
 
+function malformedVehicleFixture(count) {
+  const model = {
+    conveyorCapacity: 1,
+    passengers: [],
+    vehicles: Array.from({ length: count }, () => ({})),
+    path: [],
+    annotations: []
+  };
+  return {
+    model,
+    compiled: core.compileConstraints(model),
+    layout: { belt: [], left: [], right: [] }
+  };
+}
+
 function verifyFixture(fixture, optionalTrace) {
   const compiled = core.compileConstraints(fixture.model);
   assert.deepEqual(json(compiled.errors), [], 'fixture must compile');
@@ -612,7 +627,7 @@ test('returns deterministic ordinary JSON-safe errors and proof objects', () => 
   assert.doesNotThrow(() => JSON.stringify(first));
 });
 
-test('deduplicates only fully identical supplied and derived issues', () => {
+test('deduplicates semantically identical supplied and derived issues', () => {
   const fixture = makeThreePressureScenario();
   fixture.layout.belt.pop();
   const compiled = core.compileConstraints(fixture.model);
@@ -627,6 +642,36 @@ test('deduplicates only fully identical supplied and derived issues', () => {
 
   assert.equal(codes(result).filter(code => code === 'belt_capacity_mismatch').length, 1);
   assert(codes(result).includes('invalid_compiled_structure'));
+});
+
+test('deduplicates diagnostics by semantic details instead of localized message text', () => {
+  const verifyMalformedVehicles = count => {
+    const fixture = malformedVehicleFixture(count);
+    return core.verify(fixture.model, fixture.compiled, fixture.layout);
+  };
+
+  const oneVehicleIssues = verifyMalformedVehicles(1).errors.filter(issue => (
+    issue.category === 'input_error' && issue.code === 'invalid_vehicle_id'
+  ));
+  assert.equal(oneVehicleIssues.length, 1);
+  assert.equal(oneVehicleIssues[0].vehicleIndex, 0);
+
+  const twoVehicleIssues = verifyMalformedVehicles(2).errors.filter(issue => (
+    issue.category === 'input_error' && issue.code === 'invalid_vehicle_id'
+  ));
+  assert.equal(twoVehicleIssues.length, 2);
+  assert.deepEqual(Array.from(twoVehicleIssues, issue => issue.vehicleIndex), [0, 1]);
+});
+
+test('deduplicates one hundred malformed vehicles within five seconds', () => {
+  const fixture = malformedVehicleFixture(100);
+  const startedAt = process.hrtime.bigint();
+
+  const result = core.verify(fixture.model, fixture.compiled, fixture.layout);
+
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+  assert(result.errors.length > 0);
+  assert(elapsedMs < 5000, `verification took ${elapsedMs.toFixed(1)}ms`);
 });
 
 let failed = 0;
