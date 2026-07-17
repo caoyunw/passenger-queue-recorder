@@ -2705,6 +2705,7 @@
     const passengers = readOwnDataValue(model, 'passengers').value;
     const vehicles = readOwnDataValue(model, 'vehicles').value;
     const path = readOwnDataValue(model, 'path').value;
+    const annotations = readOwnDataValue(model, 'annotations').value;
     // One verification replays the immutable model. Treat each snapshot row,
     // passenger, and dependency ID as a work unit so larger models yield sooner.
     const addWorkUnits = (current, additional) => (
@@ -2716,6 +2717,7 @@
     modelWorkUnits = addWorkUnits(modelWorkUnits, passengers.length);
     modelWorkUnits = addWorkUnits(modelWorkUnits, vehicles.length);
     modelWorkUnits = addWorkUnits(modelWorkUnits, path.length);
+    modelWorkUnits = addWorkUnits(modelWorkUnits, annotations.length);
     vehicles.forEach(vehicle => {
       const frontVehicleIds = readOwnDataValue(vehicle, 'frontVehicleIds').value;
       const backVehicleIds = readOwnDataValue(vehicle, 'backVehicleIds').value;

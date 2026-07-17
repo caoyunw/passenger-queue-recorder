@@ -198,6 +198,29 @@ test('counts nested dependency entries in the deterministic advance work cap', (
   assert.equal(result.budget, 20000);
 });
 
+test('counts annotations in the deterministic advance work cap', () => {
+  const model = makeThreePressureModel();
+  for (let index = 0; index < 6000; index += 1) {
+    model.annotations.push(core.createAnnotation(999));
+  }
+  assert.deepEqual(json(core.compileConstraints(model).errors), [], 'fixture must compile');
+  const session = core.createSearchSession(model, { budget: 20000, seed: 1 });
+  const startedAt = process.hrtime.bigint();
+
+  const result = session.advance(256);
+
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+  assert.equal(
+    result.expanded,
+    1,
+    `expanded ${result.expanded} candidates in ${elapsedMs.toFixed(1)}ms`
+  );
+  assert.equal(result.status, 'running');
+  assert.equal(result.layout, null);
+  assert.equal(result.frontier, 2);
+  assert.equal(result.budget, 20000);
+});
+
 test('is independently deterministic for several safe seeds', () => {
   const model = makeReversePathModel();
   [0, 2, 37, Number.MAX_SAFE_INTEGER].forEach(seed => {
