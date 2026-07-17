@@ -2705,12 +2705,24 @@
     const passengers = readOwnDataValue(model, 'passengers').value;
     const vehicles = readOwnDataValue(model, 'vehicles').value;
     const path = readOwnDataValue(model, 'path').value;
-    // One verification replays the immutable model. Treat each snapshot row/passenger
-    // as a work unit so larger models cooperatively yield after fewer candidates.
-    const modelWorkUnits = Math.max(
-      1,
-      passengers.length + vehicles.length + path.length
+    // One verification replays the immutable model. Treat each snapshot row,
+    // passenger, and dependency ID as a work unit so larger models yield sooner.
+    const addWorkUnits = (current, additional) => (
+      current >= ADVANCE_WORK_UNIT_BUDGET - additional
+        ? ADVANCE_WORK_UNIT_BUDGET
+        : current + additional
     );
+    let modelWorkUnits = 0;
+    modelWorkUnits = addWorkUnits(modelWorkUnits, passengers.length);
+    modelWorkUnits = addWorkUnits(modelWorkUnits, vehicles.length);
+    modelWorkUnits = addWorkUnits(modelWorkUnits, path.length);
+    vehicles.forEach(vehicle => {
+      const frontVehicleIds = readOwnDataValue(vehicle, 'frontVehicleIds').value;
+      const backVehicleIds = readOwnDataValue(vehicle, 'backVehicleIds').value;
+      modelWorkUnits = addWorkUnits(modelWorkUnits, frontVehicleIds.length);
+      modelWorkUnits = addWorkUnits(modelWorkUnits, backVehicleIds.length);
+    });
+    modelWorkUnits = Math.max(1, modelWorkUnits);
     return Math.max(1, Math.floor(ADVANCE_WORK_UNIT_BUDGET / modelWorkUnits));
   }
 
