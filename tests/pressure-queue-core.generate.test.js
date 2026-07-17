@@ -48,6 +48,57 @@ function makeThreePressureModel() {
   };
 }
 
+function makeDelayedTriggerModel() {
+  const vehicles = [
+    { id: 1, colorValue: 1, capacity: 1 },
+    { id: 2, colorValue: 3, capacity: 2 },
+    { id: 3, colorValue: 4, capacity: 1 },
+    ...Array.from({ length: 7 }, (_, index) => ({
+      id: index + 4,
+      colorValue: index + 5,
+      capacity: 1
+    }))
+  ].map(vehicle => ({ ...vehicle, frontVehicleIds: [], backVehicleIds: [] }));
+  const annotations = vehicles.map(vehicle => {
+    const annotation = core.createAnnotation(vehicle.id);
+    if (vehicle.id === 1) {
+      annotation.settlementTarget = 'empty';
+      annotation.pressureSlot = true;
+      annotation.releaseTriggerVehicleId = 2;
+      annotation.rightPreview = { mode: 'custom', count: 1 };
+    } else if (vehicle.id === 3) {
+      annotation.settlementTarget = 'instant';
+      annotation.rightPreview = { mode: 'custom', count: 1 };
+    } else if (vehicle.id >= 4) {
+      annotation.settlementTarget = 'instant';
+    }
+    return annotation;
+  });
+  return {
+    conveyorCapacity: 1,
+    passengers: [1, 3, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    vehicles,
+    path: vehicles.map(vehicle => vehicle.id),
+    annotations
+  };
+}
+
+function makeSingleVehicleModel() {
+  return {
+    conveyorCapacity: 1,
+    passengers: new Array(11).fill(1),
+    vehicles: [{
+      id: 1,
+      colorValue: 1,
+      capacity: 11,
+      frontVehicleIds: [],
+      backVehicleIds: []
+    }],
+    path: [1],
+    annotations: []
+  };
+}
+
 function makeReversePathModel(vehicleCount = 5) {
   const vehicles = Array.from({ length: vehicleCount }, (_, index) => ({
     id: index + 1,
@@ -114,6 +165,22 @@ test('generates and strictly verifies the canonical three-pressure scenario', ()
   const strict = core.verify(model, core.compileConstraints(model), result.layout);
   assert.deepEqual(json(strict.errors), []);
   assert.deepEqual(json(result.verification), json(strict));
+});
+
+test('never succeeds with a pressure trigger that misses its own click departure', () => {
+  const model = makeDelayedTriggerModel();
+  const result = core.generate(model, { budget: 20000, seed: 1 });
+
+  if (result.status === 'success') {
+    const strict = core.verify(model, core.compileConstraints(model), result.layout);
+    assert.deepEqual(json(strict.errors), []);
+    const trace = core.simulate(model, result.layout);
+    assert.equal(trace.departureStepById[2], 2);
+    assert.deepEqual(json(result.verification), json(strict));
+  } else {
+    assert(['budget_exhausted', 'constraint_conflict'].includes(result.status));
+    assert.equal(result.layout, null);
+  }
 });
 
 test('repeats the complete result exactly for the same input, options, and seed', () => {
@@ -199,26 +266,25 @@ test('counts nested dependency entries in the deterministic advance work cap', (
 });
 
 test('counts annotations in the deterministic advance work cap', () => {
-  const model = makeThreePressureModel();
-  for (let index = 0; index < 6000; index += 1) {
-    model.annotations.push(core.createAnnotation(999));
-  }
-  assert.deepEqual(json(core.compileConstraints(model).errors), [], 'fixture must compile');
-  const session = core.createSearchSession(model, { budget: 20000, seed: 1 });
+  const annotated = makeReversePathModel(200);
+  const omitted = json(annotated);
+  delete omitted.annotations;
+  assert.deepEqual(json(core.compileConstraints(annotated).errors), [], 'fixture must compile');
+  assert.deepEqual(json(core.compileConstraints(omitted).errors), [], 'omitted fixture must compile');
+  const annotatedSession = core.createSearchSession(annotated, { budget: 20000, seed: 1 });
+  const omittedSession = core.createSearchSession(omitted, { budget: 20000, seed: 1 });
   const startedAt = process.hrtime.bigint();
 
-  const result = session.advance(256);
+  const annotatedResult = annotatedSession.advance(256);
+  const omittedResult = omittedSession.advance(256);
 
   const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
-  assert.equal(
-    result.expanded,
-    1,
-    `expanded ${result.expanded} candidates in ${elapsedMs.toFixed(1)}ms`
-  );
-  assert.equal(result.status, 'running');
-  assert.equal(result.layout, null);
-  assert.equal(result.frontier, 2);
-  assert.equal(result.budget, 20000);
+  assert.equal(annotatedResult.expanded, 3, `annotated advance took ${elapsedMs.toFixed(1)}ms`);
+  assert.equal(omittedResult.expanded, 4, `omitted advance took ${elapsedMs.toFixed(1)}ms`);
+  assert.equal(annotatedResult.status, 'running');
+  assert.equal(omittedResult.status, 'running');
+  assert.equal(annotatedResult.layout, null);
+  assert.equal(omittedResult.layout, null);
 });
 
 test('is independently deterministic for several safe seeds', () => {
@@ -322,6 +388,51 @@ test('keeps base input errors distinct from compiler constraint conflicts', () =
   assert.equal(conflict.layout, null);
   assert.equal(conflict.expanded, 0);
   assert(codes(conflict).includes('pressure_requires_waiting_target'));
+});
+
+test('never generates a layout from malformed, duplicate, sparse, or unknown annotations', () => {
+  const exact = { ...core.createAnnotation(1), settlementTarget: 'empty' };
+  const missingKey = { ...exact };
+  delete missingKey.remainingSeats;
+  const sparse = [];
+  sparse.length = 1;
+  const cases = [
+    ['unknown key', [{ ...exact, unexpected: true }], 'invalid_annotation_entry'],
+    ['missing key', [missingKey], 'invalid_annotation_entry'],
+    ['invalid field value', [{ ...exact, settlementTarget: 'unknown' }], 'invalid_annotation_entry'],
+    ['malformed item', [null], 'invalid_annotation_entry'],
+    ['non-plain item', [Object.assign(Object.create({}), exact)], 'invalid_annotation_entry'],
+    ['sparse array', sparse, 'invalid_annotations_array'],
+    ['duplicate id', [exact, core.createAnnotation(1)], 'duplicate_annotation_vehicle_id'],
+    ['unknown id', [core.createAnnotation(999)], 'unknown_annotation_vehicle_id']
+  ];
+
+  cases.forEach(([name, annotations, code]) => {
+    const model = makeSingleVehicleModel();
+    model.annotations = annotations;
+    const result = core.generate(model, { budget: 20000, seed: 1 });
+    assert.equal(result.status, 'input_error', name);
+    assert.equal(result.layout, null, name);
+    assert(codes(result).includes(code), name);
+    assert.doesNotThrow(() => JSON.stringify(result), name);
+  });
+});
+
+test('still generates with the annotations property omitted or a legal subset supplied', () => {
+  const omitted = makeSingleVehicleModel();
+  delete omitted.annotations;
+  let omittedResult;
+  assert.doesNotThrow(() => {
+    omittedResult = core.generate(omitted, { budget: 20000, seed: 1 });
+  });
+  assert.equal(omittedResult.status, 'success');
+  assert.deepEqual(json(omittedResult.errors), []);
+
+  const subset = makeReversePathModel();
+  subset.annotations = [core.createAnnotation(3)];
+  const subsetResult = core.generate(subset, { budget: 20000, seed: 1 });
+  assert.equal(subsetResult.status, 'success');
+  assert.deepEqual(json(subsetResult.errors), []);
 });
 
 test('sanitizes hostile options and advance limits without executing accessors', () => {

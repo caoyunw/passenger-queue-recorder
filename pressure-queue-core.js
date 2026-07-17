@@ -400,15 +400,24 @@
     return inspection.entries.map(entry => entry.value);
   }
 
-  function readOwnDataValue(value, key) {
+  function inspectOwnProperty(value, key) {
     try {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
-        ? { present: true, value: descriptor.value }
-        : { present: false, value: undefined };
+      if (!descriptor) return { kind: 'missing', value: undefined };
+      return Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        ? { kind: 'data', value: descriptor.value }
+        : { kind: 'accessor', value: undefined };
     } catch {
+      return { kind: 'invalid', value: undefined };
+    }
+  }
+
+  function readOwnDataValue(value, key) {
+    const property = inspectOwnProperty(value, key);
+    if (property.kind !== 'data') {
       return { present: false, value: undefined };
     }
+    return { present: true, value: property.value };
   }
 
   function validateBaseInput(input) {
@@ -725,6 +734,17 @@
     annotation.initialOccupy = cloneCompilerStrength(annotation.initialOccupy);
     annotation.laterOccupy = cloneCompilerStrength(annotation.laterOccupy);
     annotation.rightPreview = cloneCompilerStrength(annotation.rightPreview);
+    if (!SETTLEMENT_TARGETS.includes(annotation.settlementTarget)
+      || typeof annotation.pressureSlot !== 'boolean'
+      || typeof annotation.pathUnlock !== 'boolean'
+      || (annotation.settlementTarget !== 'partial'
+        && annotation.remainingSeats !== null
+        && !isPositiveInteger(annotation.remainingSeats))
+      || (!annotation.pressureSlot
+        && annotation.releaseTriggerVehicleId !== null
+        && !isNonNegativeInteger(annotation.releaseTriggerVehicleId))) {
+      return null;
+    }
     return annotation;
   }
 
@@ -791,10 +811,71 @@
     const pathProperty = readOwnDataValue(input, 'path');
     const pathInspection = inspectDenseNonNegativeIntegerArray(pathProperty.value);
     const safePath = pathInspection.values.filter(isNonNegativeInteger);
-    const annotationProperty = readOwnDataValue(input, 'annotations');
-    const compilerAnnotations = readDenseArrayEntries(annotationProperty.value)
-      .map(readCompilerAnnotation)
-      .filter(annotation => annotation !== null);
+    const annotationProperty = inspectOwnProperty(input, 'annotations');
+    const annotationInspection = annotationProperty.kind === 'missing'
+      ? { dense: true, invalidIndex: null, entries: [] }
+      : annotationProperty.kind === 'data'
+        ? inspectDenseArrayEntries(annotationProperty.value)
+        : { dense: false, invalidIndex: -1, entries: [] };
+    const compilerAnnotations = [];
+    const firstAnnotationIndexById = new Map();
+    const safePathIds = new Set(safePath);
+    if (!annotationInspection.dense) {
+      errors.push(createIssue(
+        'input_error',
+        'invalid_annotations_array',
+        'Annotations must be a dense array when provided',
+        { invalidIndex: annotationInspection.invalidIndex }
+      ));
+    } else {
+      annotationInspection.entries.forEach(entry => {
+        const annotation = readCompilerAnnotation(entry.value);
+        if (annotation === null) {
+          errors.push(createIssue(
+            'input_error',
+            'invalid_annotation_entry',
+            `Annotation #${entry.index + 1} must be a complete ordinary annotation object`,
+            { annotationIndex: entry.index }
+          ));
+          return;
+        }
+        if (firstAnnotationIndexById.has(annotation.vehicleId)) {
+          errors.push(createIssue(
+            'input_error',
+            'duplicate_annotation_vehicle_id',
+            `Vehicle #${annotation.vehicleId} has more than one annotation`,
+            {
+              vehicleId: annotation.vehicleId,
+              firstAnnotationIndex: firstAnnotationIndexById.get(annotation.vehicleId),
+              annotationIndex: entry.index
+            }
+          ));
+          return;
+        }
+        firstAnnotationIndexById.set(annotation.vehicleId, entry.index);
+        if (!safePathIds.has(annotation.vehicleId)) {
+          errors.push(createIssue(
+            'input_error',
+            'unknown_annotation_vehicle_id',
+            `Annotation #${entry.index + 1} does not identify a path vehicle`,
+            { vehicleId: annotation.vehicleId, annotationIndex: entry.index }
+          ));
+          return;
+        }
+        compilerAnnotations.push(annotation);
+      });
+    }
+    if (errors.length > 0) {
+      return {
+        annotations: [],
+        pressureLinks: [],
+        initialOccupy: [],
+        laterOccupy: [],
+        rightPreview: [],
+        stepById: {},
+        errors
+      };
+    }
     const syncableAnnotations = compilerAnnotations.filter(isAnnotation);
     const annotations = syncAnnotations(safePath, syncableAnnotations);
     const compilerAnnotationById = new Map(
@@ -952,6 +1033,27 @@
           );
         }
       }
+    });
+
+    const checkedTriggerVehicleIds = new Set();
+    pressureLinks.forEach(link => {
+      if (checkedTriggerVehicleIds.has(link.triggerVehicleId)) return;
+      checkedTriggerVehicleIds.add(link.triggerVehicleId);
+      const triggerAnnotation = compilerAnnotationById.get(link.triggerVehicleId)
+        || createAnnotation(link.triggerVehicleId);
+      if (triggerAnnotation.settlementTarget !== 'empty'
+        && triggerAnnotation.settlementTarget !== 'partial') {
+        return;
+      }
+      errors.push(createIssue(
+        'constraint_conflict',
+        'pressure_trigger_requires_departure_target',
+        `Pressure trigger vehicle #${link.triggerVehicleId} must be able to depart on its click step`,
+        {
+          triggerVehicleId: link.triggerVehicleId,
+          settlementTarget: triggerAnnotation.settlementTarget
+        }
+      ));
     });
 
     const initialOccupy = [...initialGroups.values()];
@@ -2203,6 +2305,36 @@
     const hasCanonicalPrimaryErrors = canonicalCompiledIssues.issues.length > 0
       || canonicalTraceIssues.issues.length > 0
       || base.errors.length > 0;
+    if (modelStructureValid
+      && compiledStructureValid
+      && traceStructureValid
+      && !hasCanonicalPrimaryErrors) {
+      const checkedTriggerVehicleIds = new Set();
+      inspectedCompiled.pressureLinks.forEach(link => {
+        if (checkedTriggerVehicleIds.has(link.triggerVehicleId)) return;
+        checkedTriggerVehicleIds.add(link.triggerVehicleId);
+        const triggerStep = path.indexOf(link.triggerVehicleId) + 1;
+        const departureStep = inspectedTrace.departureStepById.has(link.triggerVehicleId)
+          ? inspectedTrace.departureStepById.get(link.triggerVehicleId)
+          : null;
+        if (triggerStep < 1 || departureStep === triggerStep) return;
+        const vehicle = byId.get(link.triggerVehicleId);
+        errors.push(createIssue(
+          'constraint_conflict',
+          'pressure_trigger_departure_step_missed',
+          `Pressure trigger vehicle #${link.triggerVehicleId} did not depart on its click step ${triggerStep}`,
+          {
+            triggerVehicleId: link.triggerVehicleId,
+            triggerStep,
+            departureStep,
+            colorValue: vehicle ? vehicle.colorValue : null,
+            hint: departureStep !== null && departureStep < triggerStep
+              ? 'move_color_later'
+              : 'move_color_earlier'
+          }
+        ));
+      });
+    }
     if (!modelStructureValid
       || !compiledStructureValid
       || !traceStructureValid
@@ -2688,24 +2820,29 @@
       entry => snapshotSearchVehicle(entry.value)
     );
     const path = snapshotDenseSearchArray(readOwnDataValue(value, 'path').value);
-    const annotations = snapshotDenseSearchArray(
-      readOwnDataValue(value, 'annotations').value,
-      entry => readCompilerAnnotation(entry.value)
-    );
-    return {
+    const annotationProperty = inspectOwnProperty(value, 'annotations');
+    const snapshot = {
       conveyorCapacity: readOwnDataValue(value, 'conveyorCapacity').value,
       passengers,
       vehicles,
-      path,
-      annotations
+      path
     };
+    if (annotationProperty.kind !== 'missing') {
+      snapshot.annotations = annotationProperty.kind === 'data'
+        ? snapshotDenseSearchArray(
+          annotationProperty.value,
+          entry => readCompilerAnnotation(entry.value)
+        )
+        : null;
+    }
+    return snapshot;
   }
 
   function modelAdvanceCandidateLimit(model) {
     const passengers = readOwnDataValue(model, 'passengers').value;
     const vehicles = readOwnDataValue(model, 'vehicles').value;
     const path = readOwnDataValue(model, 'path').value;
-    const annotations = readOwnDataValue(model, 'annotations').value;
+    const annotations = readDenseArrayEntries(readOwnDataValue(model, 'annotations').value);
     // One verification replays the immutable model. Treat each snapshot row,
     // passenger, and dependency ID as a work unit so larger models yield sooner.
     const addWorkUnits = (current, additional) => (

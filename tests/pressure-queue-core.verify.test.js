@@ -59,6 +59,48 @@ function makeThreePressureScenario() {
   };
 }
 
+function makeDelayedTriggerScenario() {
+  const vehicles = [
+    { id: 1, colorValue: 1, capacity: 1 },
+    { id: 2, colorValue: 3, capacity: 2 },
+    { id: 3, colorValue: 4, capacity: 1 },
+    ...Array.from({ length: 7 }, (_, index) => ({
+      id: index + 4,
+      colorValue: index + 5,
+      capacity: 1
+    }))
+  ].map(vehicle => ({ ...vehicle, frontVehicleIds: [], backVehicleIds: [] }));
+  const annotations = vehicles.map(vehicle => {
+    const annotation = core.createAnnotation(vehicle.id);
+    if (vehicle.id === 1) {
+      annotation.settlementTarget = 'empty';
+      annotation.pressureSlot = true;
+      annotation.releaseTriggerVehicleId = 2;
+      annotation.rightPreview = { mode: 'custom', count: 1 };
+    } else if (vehicle.id === 3) {
+      annotation.settlementTarget = 'instant';
+      annotation.rightPreview = { mode: 'custom', count: 1 };
+    } else if (vehicle.id >= 4) {
+      annotation.settlementTarget = 'instant';
+    }
+    return annotation;
+  });
+  return {
+    model: {
+      conveyorCapacity: 1,
+      passengers: [1, 3, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+      vehicles,
+      path: vehicles.map(vehicle => vehicle.id),
+      annotations
+    },
+    layout: {
+      belt: [3],
+      left: [],
+      right: [1, 4, 3, 5, 6, 7, 8, 9, 10, 11]
+    }
+  };
+}
+
 function patchAnnotation(fixture, vehicleId, patch) {
   const next = copy(fixture);
   next.model.annotations = next.model.annotations.map(annotation => (
@@ -126,6 +168,97 @@ test('verifies three pressure vehicles release together and returns the exact cu
   assert.deepEqual(json(result.trace.finalBelt), []);
   assert.deepEqual(json(result.trace.finalLeft), []);
   assert.deepEqual(json(result.trace.finalRight), []);
+});
+
+test('rejects a pressure trigger vehicle that departs after its own click step', () => {
+  const fixture = makeDelayedTriggerScenario();
+  const result = verifyFixture(fixture);
+
+  assert.deepEqual(json(result.trace.departureStepById), {
+    1: 2,
+    2: 3,
+    3: 3,
+    4: 4,
+    5: 5,
+    6: 6,
+    7: 7,
+    8: 8,
+    9: 9,
+    10: 10
+  });
+  const issue = findIssue(result, 'pressure_trigger_departure_step_missed');
+  assert(issue, 'expected a structured trigger departure issue');
+  assert.deepEqual(json(issue), {
+    triggerVehicleId: 2,
+    triggerStep: 2,
+    departureStep: 3,
+    colorValue: 3,
+    hint: 'move_color_earlier',
+    category: 'constraint_conflict',
+    code: 'pressure_trigger_departure_step_missed',
+    message: 'Pressure trigger vehicle #2 did not depart on its click step 2'
+  });
+  assert.doesNotThrow(() => JSON.stringify(result));
+});
+
+test('derives trigger departure diagnostics from canonical replay despite forged inputs', () => {
+  const fixture = makeDelayedTriggerScenario();
+  const compiled = copy(core.compileConstraints(fixture.model));
+  compiled.pressureLinks = [];
+  const trace = copy(core.simulate(fixture.model, fixture.layout));
+  trace.departureStepById[2] = 2;
+
+  const result = core.verify(fixture.model, compiled, fixture.layout, trace);
+  const issue = findIssue(result, 'pressure_trigger_departure_step_missed');
+
+  assert(codes(result).includes('invalid_compiled_structure'));
+  assert(codes(result).includes('invalid_trace_structure'));
+  assert(issue);
+  assert.equal(issue.triggerVehicleId, 2);
+  assert.equal(issue.triggerStep, 2);
+  assert.equal(issue.departureStep, 3);
+  assert.deepEqual(json(result.pressureProof), []);
+});
+
+test('reports one trigger departure error for pressure links sharing that trigger', () => {
+  const fixture = makeThreePressureScenario();
+  fixture.model.annotations[5].settlementTarget = 'normal';
+  fixture.model.vehicles.push({
+    id: 9,
+    colorValue: 9,
+    capacity: 4,
+    frontVehicleIds: [],
+    backVehicleIds: []
+  });
+  fixture.model.passengers.push(9, 9, 9, 9);
+  fixture.model.path.push(9);
+  fixture.model.annotations.push({
+    ...core.createAnnotation(9),
+    settlementTarget: 'instant'
+  });
+  fixture.layout = {
+    belt: [4, 4, 4, 4, 5, 5, 5, 5, 1, 1, 1, 1],
+    left: [2, 2, 2, 2, 3, 3, 3, 3],
+    right: [7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9, 6, 6, 6, 6]
+  };
+
+  const result = verifyFixture(fixture);
+  const triggerIssues = result.errors.filter(error => (
+    error.code === 'pressure_trigger_departure_step_missed'
+  ));
+
+  assert.equal(result.trace.departureStepById[6], 7);
+  assert.equal(triggerIssues.length, 1);
+  assert.deepEqual(json(triggerIssues[0]), {
+    triggerVehicleId: 6,
+    triggerStep: 6,
+    departureStep: 7,
+    colorValue: 6,
+    hint: 'move_color_earlier',
+    category: 'constraint_conflict',
+    code: 'pressure_trigger_departure_step_missed',
+    message: 'Pressure trigger vehicle #6 did not depart on its click step 6'
+  });
 });
 
 test('reports empty target and early pressure release when a pressure color arrives too early', () => {

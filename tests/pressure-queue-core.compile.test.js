@@ -54,6 +54,22 @@ function makeInput(overrides = {}) {
   return input;
 }
 
+function makeSingleVehicleInput() {
+  return {
+    conveyorCapacity: 1,
+    passengers: new Array(11).fill(1),
+    vehicles: [{
+      id: 1,
+      colorValue: 1,
+      capacity: 11,
+      frontVehicleIds: [],
+      backVehicleIds: []
+    }],
+    path: [1],
+    annotations: []
+  };
+}
+
 function makeAnnotatedInput(patches = {}, overrides = {}) {
   const input = makeInput(overrides);
   input.annotations = input.path
@@ -396,6 +412,136 @@ test('keeps multiple pressure links that share one later trigger', () => {
     { vehicleId: 1, triggerVehicleId: 3 },
     { vehicleId: 2, triggerVehicleId: 3 }
   ]);
+});
+
+test('rejects waiting settlement labels on pressure trigger vehicles', () => {
+  ['empty', 'partial'].forEach(settlementTarget => {
+    const triggerPatch = settlementTarget === 'partial'
+      ? { settlementTarget, remainingSeats: 2 }
+      : { settlementTarget };
+    const compiled = compile({
+      1: { settlementTarget: 'empty', pressureSlot: true, releaseTriggerVehicleId: 3 },
+      3: triggerPatch
+    }).compiled;
+    assert(hasCode(compiled, 'pressure_trigger_requires_departure_target'), settlementTarget);
+  });
+
+  ['normal', 'instant'].forEach(settlementTarget => {
+    const compiled = compile({
+      1: { settlementTarget: 'empty', pressureSlot: true, releaseTriggerVehicleId: 3 },
+      3: { settlementTarget }
+    }).compiled;
+    assert(!hasCode(compiled, 'pressure_trigger_requires_departure_target'), settlementTarget);
+  });
+});
+
+test('rejects every submitted malformed annotation entry without executing accessors or toJSON', () => {
+  const exact = { ...core.createAnnotation(1), settlementTarget: 'empty' };
+  const missingKey = { ...exact };
+  delete missingKey.pressureSlot;
+  const nonPlain = Object.assign(Object.create({ inherited: true }), exact);
+  let getterCalls = 0;
+  const accessor = { ...exact };
+  Object.defineProperty(accessor, 'settlementTarget', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error('annotation accessor must not run');
+    }
+  });
+  let toJSONCalls = 0;
+  const withToJSON = {
+    ...exact,
+    toJSON() {
+      toJSONCalls += 1;
+      throw new Error('annotation toJSON must not run');
+    }
+  };
+  const cases = [
+    { name: 'unknown key', value: { ...exact, unexpected: true } },
+    { name: 'missing key', value: missingKey },
+    { name: 'invalid field value', value: { ...exact, settlementTarget: 'unknown' } },
+    { name: 'null item', value: null },
+    { name: 'array item', value: [] },
+    { name: 'non-plain item', value: nonPlain },
+    { name: 'accessor field', value: accessor },
+    { name: 'toJSON field', value: withToJSON }
+  ];
+
+  cases.forEach(({ name, value }) => {
+    const input = makeSingleVehicleInput();
+    input.annotations = [value];
+    const compiled = core.compileConstraints(input);
+    const issue = compiled.errors.find(error => error.code === 'invalid_annotation_entry');
+    assert(issue, name);
+    assert.equal(issue.category, 'input_error', name);
+    assert.equal(issue.annotationIndex, 0, name);
+    assert.doesNotThrow(() => JSON.stringify(compiled), name);
+  });
+  assert.equal(getterCalls, 0);
+  assert.equal(toJSONCalls, 0);
+});
+
+test('rejects sparse annotation arrays and duplicate or unknown vehicle ids', () => {
+  const exact = { ...core.createAnnotation(1), settlementTarget: 'empty' };
+  const sparse = [];
+  sparse.length = 1;
+  const cases = [
+    {
+      name: 'sparse',
+      annotations: sparse,
+      code: 'invalid_annotations_array',
+      details: { invalidIndex: 0 }
+    },
+    {
+      name: 'duplicate',
+      annotations: [exact, core.createAnnotation(1)],
+      code: 'duplicate_annotation_vehicle_id',
+      details: { vehicleId: 1, firstAnnotationIndex: 0, annotationIndex: 1 }
+    },
+    {
+      name: 'unknown',
+      annotations: [core.createAnnotation(999)],
+      code: 'unknown_annotation_vehicle_id',
+      details: { vehicleId: 999, annotationIndex: 0 }
+    }
+  ];
+
+  cases.forEach(({ name, annotations, code, details }) => {
+    const input = makeSingleVehicleInput();
+    input.annotations = annotations;
+    const compiled = core.compileConstraints(input);
+    const issue = compiled.errors.find(error => error.code === code);
+    assert(issue, name);
+    Object.entries(details).forEach(([key, value]) => assert.equal(issue[key], value, `${name} ${key}`));
+    assert.doesNotThrow(() => JSON.stringify(compiled), name);
+  });
+});
+
+test('defaults annotations only when the property or a path vehicle entry is omitted', () => {
+  const omitted = makeSingleVehicleInput();
+  delete omitted.annotations;
+  const omittedCompiled = core.compileConstraints(omitted);
+  assert.deepEqual(json(omittedCompiled.errors), []);
+  assert.deepEqual(json(omittedCompiled.annotations), json([core.createAnnotation(1)]));
+
+  const partial = makeInput();
+  partial.annotations = [{
+    ...core.createAnnotation(3),
+    settlementTarget: 'partial',
+    remainingSeats: 2
+  }];
+  const partialCompiled = core.compileConstraints(partial);
+  assert.deepEqual(json(partialCompiled.errors), []);
+  assert.deepEqual(json(partialCompiled.annotations).map(annotation => annotation.vehicleId), partial.path);
+  assert.equal(partialCompiled.annotations[2].settlementTarget, 'partial');
+  assert.equal(partialCompiled.annotations[0].settlementTarget, 'normal');
+
+  const explicitUndefined = makeSingleVehicleInput();
+  explicitUndefined.annotations = undefined;
+  assert(core.compileConstraints(explicitUndefined).errors.some(error => (
+    error.code === 'invalid_annotations_array'
+  )));
 });
 
 test('passes through every base error and does not throw on malformed data', () => {
