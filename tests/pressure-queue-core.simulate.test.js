@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -227,6 +228,52 @@ test('returns JSON-safe input errors for malformed vehicles, paths, and split qu
   });
 });
 
+test('preserves recognized safe vehicle ids when validation fails before any click', () => {
+  const invalidCapacity = core.simulate({
+    vehicles: [vehicle(7, 1, 0)],
+    path: [7]
+  }, { belt: [], left: [], right: [] });
+  assert.equal(invalidCapacity.steps.length, 0);
+  assert.deepEqual(json(invalidCapacity.remainingVehicleIds), [7]);
+  assert(invalidCapacity.errors.some(error => error.code === 'invalid_vehicle_capacity'));
+
+  const duplicate = core.simulate({
+    vehicles: [vehicle(7, 1, 1), vehicle(7, 2, 1)],
+    path: [7]
+  }, { belt: [], left: [], right: [] });
+  assert.equal(duplicate.steps.length, 0);
+  assert.deepEqual(json(duplicate.remainingVehicleIds), [7]);
+  assert(duplicate.errors.some(error => error.code === 'duplicate_vehicle_id'));
+
+  const mixed = core.simulate({
+    vehicles: [
+      vehicle(9, 1, 0),
+      vehicle(Symbol('unsafe'), 1, 1),
+      vehicle(3, 2, 1),
+      vehicle(9, 4, 1)
+    ],
+    path: [3]
+  }, { belt: [], left: [], right: [] });
+  assert.equal(mixed.steps.length, 0);
+  assert.deepEqual(json(mixed.remainingVehicleIds), [9, 3]);
+  assert.doesNotThrow(() => JSON.stringify(mixed));
+
+  const invalidPath = core.simulate({
+    vehicles: [vehicle(7, 1, 1)],
+    path: [Symbol('unsafe')]
+  }, { belt: [], left: [], right: [] });
+  assert.equal(invalidPath.steps.length, 0);
+  assert.deepEqual(json(invalidPath.remainingVehicleIds), [7]);
+
+  const invalidLayout = core.simulate({
+    vehicles: [vehicle(7, 1, 1)],
+    path: [7]
+  }, { belt: [1n], left: [], right: [] });
+  assert.equal(invalidLayout.steps.length, 0);
+  assert.deepEqual(json(invalidLayout.remainingVehicleIds), [7]);
+  assert.doesNotThrow(() => JSON.stringify(invalidLayout));
+});
+
 test('does not execute accessors or toJSON and accepts ordinary cross-realm arrays', () => {
   const getterCalls = [];
   const hostileModel = {};
@@ -299,6 +346,62 @@ test('detaches inputs, result snapshots, steps, and final state in both mutation
   layout.left.push(7);
   assert.deepEqual(json(detached), resultSnapshot);
   assert.doesNotThrow(() => JSON.stringify(detached));
+});
+
+test('settles without splice or shift in the passenger hot loop', () => {
+  const guardedContext = vm.createContext({ window: {} });
+  vm.runInContext(source, guardedContext, { filename: 'pressure-queue-core.js' });
+  vm.runInContext(`
+    Array.prototype.splice = function forbiddenSplice() {
+      throw new Error('settlement called Array.prototype.splice');
+    };
+    Array.prototype.shift = function forbiddenShift() {
+      throw new Error('settlement called Array.prototype.shift');
+    };
+  `, guardedContext);
+
+  let result;
+  assert.doesNotThrow(() => {
+    result = guardedContext.window.PressureQueueCore.simulate({
+      vehicles: [vehicle(1, 1, 3)],
+      path: [1]
+    }, {
+      belt: [1],
+      left: [1],
+      right: [1]
+    });
+  });
+  assert.deepEqual(json(result.errors), []);
+  assert.deepEqual(json(result.steps[0].departedVehicleIds), [1]);
+  assert.deepEqual(json(result.finalBelt), []);
+});
+
+test('settles a 500000-person belt and 100000-seat vehicle within a linear-time budget', () => {
+  const childScript = String.raw`
+    const assert = require('node:assert/strict');
+    const fs = require('node:fs');
+    const vm = require('node:vm');
+    const context = vm.createContext({ window: {} });
+    vm.runInContext(fs.readFileSync('pressure-queue-core.js', 'utf8'), context);
+    const result = context.window.PressureQueueCore.simulate({
+      vehicles: [{ id: 1, colorValue: 1, capacity: 100000, frontVehicleIds: [] }],
+      path: [1]
+    }, {
+      belt: new Array(500000).fill(1),
+      left: [],
+      right: []
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(result.errors)), []);
+    assert.equal(result.steps[0].consumption[1], 100000);
+    assert.equal(result.finalBelt.length, 400000);
+  `;
+  const child = spawnSync(process.execPath, ['-e', childScript], {
+    cwd: path.join(__dirname, '..'),
+    encoding: 'utf8',
+    timeout: 5000
+  });
+
+  assert.equal(child.status, 0, child.error ? child.error.message : child.stderr);
 });
 
 test('allows an exact settlement-limit completion and guards the next operation', () => {

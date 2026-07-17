@@ -967,6 +967,7 @@
   }
 
   const SETTLEMENT_OPERATION_LIMIT = 100000;
+  const CONSUMED_BELT_POSITION = Symbol('consumed-belt-position');
 
   function countArray(values) {
     return Object.fromEntries(countValues(values));
@@ -981,9 +982,70 @@
     };
   }
 
+  function appendBeltValue(working, colorValue) {
+    const position = working.beltValues.length;
+    working.beltValues.push(colorValue);
+    let positions = working.beltPositionsByColor.get(colorValue);
+    if (!positions) {
+      positions = [];
+      working.beltPositionsByColor.set(colorValue, positions);
+      working.beltPositionHeads.set(colorValue, 0);
+    }
+    positions.push(position);
+  }
+
+  function createSimulationWorkingState(layout) {
+    const working = {
+      beltValues: [],
+      beltPositionsByColor: new Map(),
+      beltPositionHeads: new Map(),
+      leftValues: [...layout.left],
+      leftHead: 0,
+      rightValues: [...layout.right],
+      rightHead: 0,
+      slots: [null, null, null, null]
+    };
+    layout.belt.forEach(colorValue => appendBeltValue(working, colorValue));
+    return working;
+  }
+
+  function materializeBelt(working) {
+    const belt = [];
+    working.beltValues.forEach(colorValue => {
+      if (colorValue !== CONSUMED_BELT_POSITION) belt.push(colorValue);
+    });
+    return belt;
+  }
+
   function refillOne(working) {
-    if (working.left.length > 0) working.belt.push(working.left.shift());
-    else if (working.right.length > 0) working.belt.push(working.right.shift());
+    if (working.leftHead < working.leftValues.length) {
+      appendBeltValue(working, working.leftValues[working.leftHead]);
+      working.leftHead += 1;
+    } else if (working.rightHead < working.rightValues.length) {
+      appendBeltValue(working, working.rightValues[working.rightHead]);
+      working.rightHead += 1;
+    }
+  }
+
+  function findNextBoardablePassenger(working) {
+    let firstPosition = -1;
+    let firstColorValue = null;
+
+    working.slots.forEach(slot => {
+      if (slot === null || slot.remaining < 1) return;
+      const positions = working.beltPositionsByColor.get(slot.colorValue);
+      const head = working.beltPositionHeads.get(slot.colorValue) || 0;
+      if (!positions || head >= positions.length) return;
+      const position = positions[head];
+      if (firstPosition === -1 || position < firstPosition) {
+        firstPosition = position;
+        firstColorValue = slot.colorValue;
+      }
+    });
+
+    return firstPosition === -1
+      ? null
+      : { position: firstPosition, colorValue: firstColorValue };
   }
 
   function settle(working) {
@@ -993,24 +1055,25 @@
     let guardExceeded = false;
 
     while (true) {
-      const passengerIndex = working.belt.findIndex(colorValue => (
-        working.slots.some(slot => (
-          slot !== null && slot.colorValue === colorValue && slot.remaining > 0
-        ))
-      ));
-      if (passengerIndex === -1) break;
+      const passenger = findNextBoardablePassenger(working);
+      if (passenger === null) break;
       if (operationCount >= SETTLEMENT_OPERATION_LIMIT) {
         guardExceeded = true;
         break;
       }
 
       operationCount += 1;
-      const colorValue = working.belt[passengerIndex];
       const slotIndex = working.slots.findIndex(slot => (
-        slot !== null && slot.colorValue === colorValue && slot.remaining > 0
+        slot !== null
+          && slot.colorValue === passenger.colorValue
+          && slot.remaining > 0
       ));
       const slot = working.slots[slotIndex];
-      working.belt.splice(passengerIndex, 1);
+      working.beltValues[passenger.position] = CONSUMED_BELT_POSITION;
+      working.beltPositionHeads.set(
+        passenger.colorValue,
+        (working.beltPositionHeads.get(passenger.colorValue) || 0) + 1
+      );
       slot.remaining -= 1;
       consumption.set(slot.vehicleId, (consumption.get(slot.vehicleId) || 0) + 1);
       refillOne(working);
@@ -1124,6 +1187,7 @@
     records.forEach(record => {
       if (record.validId) idCounts.set(record.id, (idCounts.get(record.id) || 0) + 1);
     });
+    const recognizedVehicleIds = [...idCounts.keys()];
     idCounts.forEach((count, vehicleId) => {
       if (count > 1) {
         errors.push(createIssue(
@@ -1201,7 +1265,7 @@
         frontVehicleIds: [...record.frontVehicleIds]
       }));
 
-    return { vehicles, path, errors };
+    return { vehicles, recognizedVehicleIds, path, errors };
   }
 
   function inspectSimulationLayout(layout) {
@@ -1237,9 +1301,9 @@
       initial,
       steps,
       departureStepById,
-      finalBelt: [...working.belt],
-      finalLeft: [...working.left],
-      finalRight: [...working.right],
+      finalBelt: materializeBelt(working),
+      finalLeft: working.leftValues.slice(working.leftHead),
+      finalRight: working.rightValues.slice(working.rightHead),
       finalSlots: working.slots.map(cloneSlot),
       remainingVehicleIds: [...remaining],
       errors
@@ -1251,17 +1315,12 @@
     const inspectedLayout = inspectSimulationLayout(layout);
     const errors = [...inspectedModel.errors, ...inspectedLayout.errors];
     const byId = new Map(inspectedModel.vehicles.map(vehicle => [vehicle.id, vehicle]));
-    const remaining = new Set(inspectedModel.vehicles.map(vehicle => vehicle.id));
-    const working = {
+    const remaining = new Set(inspectedModel.recognizedVehicleIds);
+    const working = createSimulationWorkingState(inspectedLayout);
+    const initial = {
       belt: [...inspectedLayout.belt],
       left: [...inspectedLayout.left],
       right: [...inspectedLayout.right],
-      slots: [null, null, null, null]
-    };
-    const initial = {
-      belt: [...working.belt],
-      left: [...working.left],
-      right: [...working.right],
       slots: working.slots.map(cloneSlot)
     };
     const steps = [];
@@ -1317,6 +1376,7 @@
       settled.departedVehicleIds.forEach(id => {
         departureStepById[id] = index + 1;
       });
+      const belt = materializeBelt(working);
       steps.push({
         step: index + 1,
         clickedVehicleId: vehicleId,
@@ -1326,10 +1386,10 @@
         consumption: settled.consumption,
         departedVehicleIds: [...settled.departedVehicleIds],
         slots: working.slots.map(cloneSlot),
-        belt: [...working.belt],
-        beltCounts: countArray(working.belt),
-        leftRemaining: working.left.length,
-        rightRemaining: working.right.length
+        belt,
+        beltCounts: countArray(belt),
+        leftRemaining: working.leftValues.length - working.leftHead,
+        rightRemaining: working.rightValues.length - working.rightHead
       });
       if (settled.guardExceeded) {
         errors.push(createIssue(
