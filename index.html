@@ -5232,20 +5232,207 @@
       }
     }
 
-    function isValidPressureQueueResult(result) {
-      if (result === null) return true;
-      if (!result || typeof result !== 'object' || Array.isArray(result)) return false;
+    const INVALID_PRESSURE_QUEUE_RESULT = Symbol('invalid-pressure-queue-result');
+    const PRESSURE_QUEUE_FAILURE_STATUSES = new Set([
+      'input_error',
+      'constraint_conflict',
+      'budget_exhausted'
+    ]);
+
+    function cloneJsonSafeValueWithoutAccessors(value) {
+      const clonePrimitive = candidate => {
+        if (candidate === null
+          || typeof candidate === 'boolean'
+          || typeof candidate === 'string') {
+          return candidate;
+        }
+        return typeof candidate === 'number' && Number.isFinite(candidate)
+          ? candidate
+          : INVALID_PRESSURE_QUEUE_RESULT;
+      };
+      const createContainer = source => {
+        try {
+          if ('toJSON' in source) return INVALID_PRESSURE_QUEUE_RESULT;
+          if (Array.isArray(source)) {
+            if (!hasBaselinePrototype(source, Array) || !isDenseArray(source)) {
+              return INVALID_PRESSURE_QUEUE_RESULT;
+            }
+            const lengthDescriptor = Object.getOwnPropertyDescriptor(source, 'length');
+            return lengthDescriptor
+              && Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value')
+              && Number.isSafeInteger(lengthDescriptor.value)
+              && lengthDescriptor.value >= 0
+              ? new Array(lengthDescriptor.value)
+              : INVALID_PRESSURE_QUEUE_RESULT;
+          }
+          return hasBaselinePrototype(source, Object)
+            ? {}
+            : INVALID_PRESSURE_QUEUE_RESULT;
+        } catch {
+          return INVALID_PRESSURE_QUEUE_RESULT;
+        }
+      };
+
+      const primitive = clonePrimitive(value);
+      if (primitive !== INVALID_PRESSURE_QUEUE_RESULT) return primitive;
+      if (!value || typeof value !== 'object') return INVALID_PRESSURE_QUEUE_RESULT;
+
+      const root = createContainer(value);
+      if (root === INVALID_PRESSURE_QUEUE_RESULT) return root;
+      const ancestors = new Set();
+      const work = [{ type: 'enter', source: value, target: root }];
+
+      while (work.length > 0) {
+        const item = work.pop();
+        if (item.type === 'exit') {
+          ancestors.delete(item.source);
+          continue;
+        }
+        if (ancestors.has(item.source)) return INVALID_PRESSURE_QUEUE_RESULT;
+        ancestors.add(item.source);
+        work.push({ type: 'exit', source: item.source });
+
+        let keys;
+        try {
+          keys = Array.isArray(item.source)
+            ? Array.from({ length: item.source.length }, (_, index) => String(index))
+            : Reflect.ownKeys(item.source);
+        } catch {
+          return INVALID_PRESSURE_QUEUE_RESULT;
+        }
+        if (keys.some(key => typeof key !== 'string') || keys.includes('toJSON')) {
+          return INVALID_PRESSURE_QUEUE_RESULT;
+        }
+
+        const childTasks = [];
+        for (const key of keys) {
+          let descriptor;
+          try {
+            descriptor = Object.getOwnPropertyDescriptor(item.source, key);
+          } catch {
+            return INVALID_PRESSURE_QUEUE_RESULT;
+          }
+          if (!descriptor
+            || !descriptor.enumerable
+            || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+            return INVALID_PRESSURE_QUEUE_RESULT;
+          }
+
+          const childPrimitive = clonePrimitive(descriptor.value);
+          let child = childPrimitive;
+          if (childPrimitive === INVALID_PRESSURE_QUEUE_RESULT) {
+            if (!descriptor.value || typeof descriptor.value !== 'object') {
+              return INVALID_PRESSURE_QUEUE_RESULT;
+            }
+            child = createContainer(descriptor.value);
+            if (child === INVALID_PRESSURE_QUEUE_RESULT) return child;
+            childTasks.push({ type: 'enter', source: descriptor.value, target: child });
+          }
+          Object.defineProperty(item.target, key, {
+            value: child,
+            enumerable: true,
+            configurable: true,
+            writable: true
+          });
+        }
+        for (let index = childTasks.length - 1; index >= 0; index -= 1) {
+          work.push(childTasks[index]);
+        }
+      }
+
+      return root;
+    }
+
+    function isStructuredPressureQueueIssueForPersistence(issue) {
+      return Boolean(issue
+        && typeof issue === 'object'
+        && !Array.isArray(issue)
+        && typeof issue.category === 'string'
+        && typeof issue.code === 'string'
+        && typeof issue.message === 'string');
+    }
+
+    function canonicalizePressureQueueResult(result, currentState) {
+      if (result === null) return { valid: true, value: null };
+      const canonical = cloneJsonSafeValueWithoutAccessors(result);
+      if (canonical === INVALID_PRESSURE_QUEUE_RESULT
+        || !canonical
+        || typeof canonical !== 'object'
+        || Array.isArray(canonical)) {
+        return { valid: false, value: null };
+      }
+
+      const hasOwn = key => Object.prototype.hasOwnProperty.call(canonical, key);
+      if (!hasOwn('status')
+        || !hasOwn('layout')
+        || !hasOwn('errors')
+        || !hasOwn('expanded')
+        || !hasOwn('budget')
+        || typeof canonical.status !== 'string'
+        || !Array.isArray(canonical.errors)
+        || !isDenseArray(canonical.errors)
+        || !canonical.errors.every(isStructuredPressureQueueIssueForPersistence)
+        || !Number.isSafeInteger(canonical.expanded)
+        || canonical.expanded < 0
+        || !Number.isSafeInteger(canonical.budget)
+        || canonical.budget < 0) {
+        return { valid: false, value: null };
+      }
+
+      if (PRESSURE_QUEUE_FAILURE_STATUSES.has(canonical.status)) {
+        return canonical.layout === null
+          ? { valid: true, value: canonical }
+          : { valid: false, value: null };
+      }
+      if (canonical.status !== 'success'
+        || !hasOwn('verification')
+        || canonical.budget <= 0
+        || !canonical.layout
+        || typeof canonical.layout !== 'object'
+        || Array.isArray(canonical.layout)
+        || canonical.errors.length !== 0
+        || !currentState) {
+        return { valid: false, value: null };
+      }
 
       try {
-        const statusDescriptor = Object.getOwnPropertyDescriptor(result, 'status');
-        return hasBaselinePrototype(result, Object)
-          && Boolean(statusDescriptor
-            && Object.prototype.hasOwnProperty.call(statusDescriptor, 'value')
-            && typeof statusDescriptor.value === 'string')
-          && isJsonSafeValue(result);
+        const parsed = parsePressureQueueModel(currentState);
+        if (!parsed
+          || !Array.isArray(parsed.errors)
+          || parsed.errors.length !== 0) {
+          return { valid: false, value: null };
+        }
+        const compiled = window.PressureQueueCore.compileConstraints(parsed.model);
+        if (!compiled
+          || !Array.isArray(compiled.errors)
+          || compiled.errors.length !== 0) {
+          return { valid: false, value: null };
+        }
+        const verification = window.PressureQueueCore.verify(
+          parsed.model,
+          compiled,
+          canonical.layout
+        );
+        const canonicalVerification = cloneJsonSafeValueWithoutAccessors(verification);
+        if (canonicalVerification === INVALID_PRESSURE_QUEUE_RESULT
+          || !canonicalVerification
+          || typeof canonicalVerification !== 'object'
+          || Array.isArray(canonicalVerification)
+          || !Array.isArray(canonicalVerification.errors)
+          || !isDenseArray(canonicalVerification.errors)
+          || !canonicalVerification.errors.every(isStructuredPressureQueueIssueForPersistence)
+          || canonicalVerification.errors.length !== 0) {
+          return { valid: false, value: null };
+        }
+        canonical.verification = canonicalVerification;
+        return { valid: true, value: canonical };
       } catch {
-        return false;
+        return { valid: false, value: null };
       }
+    }
+
+    function isValidPressureQueueResult(result, currentState) {
+      return canonicalizePressureQueueResult(result, currentState).valid;
     }
 
     function cloneJsonSafeValue(value) {
@@ -5270,28 +5457,49 @@
       };
     }
 
-    function isValidPressureQueue(pressureQueue) {
-      return hasExactKeys(pressureQueue, PRESSURE_QUEUE_KEYS)
-        && typeof pressureQueue.levelName === 'string'
-        && typeof pressureQueue.conveyorCapacity === 'string'
-        && typeof pressureQueue.passengerQueueText === 'string'
-        && typeof pressureQueue.vehicleTableText === 'string'
-        && typeof pressureQueue.clickSequenceText === 'string'
-        && typeof pressureQueue.searchBudget === 'string'
-        && typeof pressureQueue.seed === 'string'
-        && isDenseArray(pressureQueue.annotations)
-        && pressureQueue.annotations.every(window.PressureQueueCore.isAnnotation)
-        && isValidPressureQueueResult(pressureQueue.result)
-        && isDenseArray(pressureQueue.errors)
-        && pressureQueue.errors.every(error => typeof error === 'string');
+    function getOwnEnumerableDataValue(source, key) {
+      try {
+        const descriptor = source && Object.getOwnPropertyDescriptor(source, key);
+        return descriptor
+          && descriptor.enumerable
+          && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+          ? { valid: true, value: descriptor.value }
+          : { valid: false, value: undefined };
+      } catch {
+        return { valid: false, value: undefined };
+      }
     }
 
-    function isValidState(candidate) {
+    function isValidPressureQueue(
+      pressureQueue,
+      currentState,
+      canonicalResult = INVALID_PRESSURE_QUEUE_RESULT
+    ) {
+      if (!hasExactKeys(pressureQueue, PRESSURE_QUEUE_KEYS)) return false;
+      const values = Object.fromEntries(PRESSURE_QUEUE_KEYS.map(key => [
+        key,
+        getOwnEnumerableDataValue(pressureQueue, key)
+      ]));
+      if (PRESSURE_QUEUE_KEYS.some(key => !values[key].valid)) return false;
+
+      return PRESSURE_QUEUE_KEYS.slice(0, 7).every(key => typeof values[key].value === 'string')
+        && isDenseArray(values.annotations.value)
+        && values.annotations.value.every(window.PressureQueueCore.isAnnotation)
+        && (canonicalResult !== INVALID_PRESSURE_QUEUE_RESULT
+          ? values.result.value === canonicalResult
+          : isValidPressureQueueResult(values.result.value, currentState))
+        && isDenseArray(values.errors.value)
+        && values.errors.value.every(error => typeof error === 'string');
+    }
+
+    function isValidState(candidate, canonicalResult = INVALID_PRESSURE_QUEUE_RESULT) {
       if (!hasExactKeys(candidate, STATE_KEYS)
         || !isDenseArray(candidate.colors)
         || candidate.colors.length === 0) {
         return false;
       }
+      const pressureQueueProperty = getOwnEnumerableDataValue(candidate, 'pressureQueue');
+      if (!pressureQueueProperty.valid) return false;
 
       const mappedValues = new Set();
       const hasValidColors = candidate.colors.every(color => {
@@ -5314,7 +5522,7 @@
         && isValidSimulation(candidate.simulation)
         && isValidQueueFit(candidate.queueFit)
         && isValidPathSolve(candidate.pathSolve)
-        && isValidPressureQueue(candidate.pressureQueue)
+        && isValidPressureQueue(pressureQueueProperty.value, candidate, canonicalResult)
         && STAGES.includes(candidate.activeStage);
     }
 
@@ -5379,31 +5587,34 @@
       const normalized = createEmptyPressureQueue();
       if (!value || typeof value !== 'object' || Array.isArray(value)) return normalized;
 
-      const hasOwn = key => Object.prototype.hasOwnProperty.call(value, key);
       const stringKeys = PRESSURE_QUEUE_KEYS.slice(0, 7);
       stringKeys.forEach(key => {
-        if (hasOwn(key) && typeof value[key] === 'string') {
-          normalized[key] = value[key];
+        const property = getOwnEnumerableDataValue(value, key);
+        if (property.valid && typeof property.value === 'string') {
+          normalized[key] = property.value;
         }
       });
-      normalized.annotations = hasOwn('annotations') && Array.isArray(value.annotations)
-        ? value.annotations
+      const annotations = getOwnEnumerableDataValue(value, 'annotations');
+      normalized.annotations = annotations.valid && Array.isArray(annotations.value)
+        ? annotations.value
           .filter(window.PressureQueueCore.isAnnotation)
           .map(clonePressureQueueAnnotation)
         : [];
-      normalized.result = hasOwn('result') && isValidPressureQueueResult(value.result)
-        ? value.result === null ? null : cloneJsonSafeValue(value.result)
-        : null;
-      normalized.errors = hasOwn('errors') && Array.isArray(value.errors)
-        ? value.errors.filter(error => typeof error === 'string')
+      const errors = getOwnEnumerableDataValue(value, 'errors');
+      normalized.errors = errors.valid && Array.isArray(errors.value)
+        ? errors.value.filter(error => typeof error === 'string')
         : [];
-      return isValidPressureQueue(normalized) ? normalized : createEmptyPressureQueue();
+      return normalized;
     }
 
     function normalizeLoadedState(candidate) {
       if (!candidate || typeof candidate !== 'object') return createInitialState();
       const loadableKeys = new Set([...STATE_KEYS, 'parking', 'script']);
       if (!Object.keys(candidate).every(key => loadableKeys.has(key))) return createInitialState();
+      const pressureQueueProperty = getOwnEnumerableDataValue(candidate, 'pressureQueue');
+      const sourcePressureQueue = pressureQueueProperty.valid
+        ? pressureQueueProperty.value
+        : null;
       const candidateWithCurrentData = {
         colors: candidate.colors,
         queues: candidate.queues,
@@ -5411,9 +5622,19 @@
         simulation: normalizeSimulationForCurrentVersion(candidate.simulation),
         queueFit: normalizeQueueFitForCurrentVersion(candidate.queueFit),
         pathSolve: normalizePathSolveForCurrentVersion(candidate.pathSolve),
-        pressureQueue: normalizePressureQueueForCurrentVersion(candidate.pressureQueue),
+        pressureQueue: normalizePressureQueueForCurrentVersion(sourcePressureQueue),
         activeStage: STAGES.includes(candidate.activeStage) ? candidate.activeStage : 'conveyor'
       };
+      const resultProperty = getOwnEnumerableDataValue(sourcePressureQueue, 'result');
+      if (resultProperty.valid) {
+        const canonicalResult = canonicalizePressureQueueResult(
+          resultProperty.value,
+          candidateWithCurrentData
+        );
+        candidateWithCurrentData.pressureQueue.result = canonicalResult.valid
+          ? canonicalResult.value
+          : null;
+      }
       return isValidState(candidateWithCurrentData) ? candidateWithCurrentData : createInitialState();
     }
 
@@ -5431,10 +5652,26 @@
     }
 
     function saveState(nextState) {
-      if (!isValidState(nextState)) return false;
-
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
+        if ('toJSON' in Object.prototype || 'toJSON' in Array.prototype) return false;
+        const stateForStorage = cloneJsonSafeValueWithoutAccessors(nextState);
+        if (stateForStorage === INVALID_PRESSURE_QUEUE_RESULT
+          || !stateForStorage
+          || typeof stateForStorage !== 'object'
+          || Array.isArray(stateForStorage)) {
+          return false;
+        }
+        const pressureQueueProperty = getOwnEnumerableDataValue(stateForStorage, 'pressureQueue');
+        const resultProperty = getOwnEnumerableDataValue(pressureQueueProperty.value, 'result');
+        if (!pressureQueueProperty.valid || !resultProperty.valid) return false;
+        const canonicalResult = canonicalizePressureQueueResult(
+          resultProperty.value,
+          stateForStorage
+        );
+        if (!canonicalResult.valid) return false;
+        pressureQueueProperty.value.result = canonicalResult.value;
+        if (!isValidState(stateForStorage, canonicalResult.value)) return false;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stateForStorage));
         return true;
       } catch {
         return false;
@@ -6550,7 +6787,7 @@
       parse_error: '输入解析失败'
     });
 
-    function getPressureIssueParticipantIds(model, issue, stepById, vehiclesById) {
+    function getPressureIssueParticipantIds(model, issue, stepById, vehiclesById, compiled = null) {
       const participants = new Set();
       const addId = value => {
         if (Number.isSafeInteger(value) && stepById.has(value)) participants.add(value);
@@ -6586,20 +6823,34 @@
         });
       }
       if (aggregateTag) {
-        model.annotations.forEach(annotation => {
-          if (annotation[aggregateTag] !== null) addId(annotation.vehicleId);
+        const groups = compiled && Array.isArray(compiled[aggregateTag])
+          ? compiled[aggregateTag]
+          : [];
+        groups.forEach(group => {
+          if (group
+            && Number.isSafeInteger(group.count)
+            && group.count > 0
+            && Array.isArray(group.vehicleIds)) {
+            group.vehicleIds.forEach(addId);
+          }
         });
       }
       return participants;
     }
 
-    function createPressureIssueIndex(model, issues) {
+    function createPressureIssueIndex(model, issues, compiled = null) {
       const stepById = new Map(model.path.map((vehicleId, index) => [vehicleId, index + 1]));
       const vehiclesById = new Map(model.vehicles.map(vehicle => [vehicle.id, vehicle]));
       const issuesByVehicleId = new Map();
       const conflictedIds = new Set();
       const details = (Array.isArray(issues) ? issues : []).map(issue => {
-        const participantIds = getPressureIssueParticipantIds(model, issue, stepById, vehiclesById);
+        const participantIds = getPressureIssueParticipantIds(
+          model,
+          issue,
+          stepById,
+          vehiclesById,
+          compiled
+        );
         participantIds.forEach(vehicleId => {
           conflictedIds.add(vehicleId);
           const vehicleIssues = issuesByVehicleId.get(vehicleId) || [];
@@ -6826,55 +7077,15 @@
       if (cancelButton instanceof HTMLButtonElement) cancelButton.disabled = !running;
     }
 
+    let pressureQueueBoardCache = null;
+
     function renderPressureQueueStage() {
-      const inspection = inspectPressureQueueWorkspace();
-      const prepared = inspection.parsed.errors.length === 0
-        && state.pressureQueue.annotations.length === inspection.parsed.model.path.length
-        && state.pressureQueue.annotations.length > 0
-        && state.pressureQueue.annotations.every((annotation, index) => (
-          annotation.vehicleId === inspection.parsed.model.path[index]
-        ));
-      const liveIssues = prepared && inspection.compiled ? inspection.compiled.errors : [];
-      const issueIndex = createPressureIssueIndex(inspection.parsed.model, liveIssues);
-      const hasMeaningfulInput = [
-        'levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText'
-      ].some(field => state.pressureQueue[field].trim() !== '');
-      const liveParseIssues = !prepared && hasMeaningfulInput && state.pressureQueue.errors.length === 0
-        ? inspection.parsed.errors
-        : [];
-      const displayedErrors = [
-        ...state.pressureQueue.errors,
-        ...liveParseIssues.map(issue => formatPressureIssue(inspection.parsed.model, issue)),
-        ...(state.pressureQueue.errors.length === 0
-          ? liveIssues.map(issue => formatPressureIssue(inspection.parsed.model, issue, issueIndex))
-          : [])
-      ].filter((message, index, messages) => message && messages.indexOf(message) === index);
-      const conflictedIds = issueIndex.conflictedIds;
-      const releaseSources = new Map();
-      state.pressureQueue.annotations.forEach(annotation => {
-        if (!annotation.pressureSlot || annotation.releaseTriggerVehicleId === null) return;
-        const sources = releaseSources.get(annotation.releaseTriggerVehicleId) || [];
-        sources.push(annotation.vehicleId);
-        releaseSources.set(annotation.releaseTriggerVehicleId, sources);
-      });
-      const vehiclesById = issueIndex.vehiclesById;
+      const snapshot = createPressureQueuePatchSnapshot();
+      const { prepared, displayedErrors } = snapshot;
       const cards = prepared
-        ? inspection.parsed.model.path.map((vehicleId, index) => {
-          const vehicle = vehiclesById.get(vehicleId);
-          const annotation = state.pressureQueue.annotations[index];
-          return vehicle && annotation
-            ? renderPressureVehicleCard(
-              inspection.parsed.model,
-              vehicle,
-              annotation,
-              index,
-              releaseSources,
-              issueIndex.issuesByVehicleId.get(vehicleId) || [],
-              conflictedIds,
-              issueIndex.stepById
-            )
-            : '';
-        }).join('')
+        ? snapshot.inspection.parsed.model.path
+          .map(vehicleId => renderPressureVehicleCardFromSnapshot(snapshot, vehicleId))
+          .join('')
         : '';
       const result = state.pressureQueue.result;
       const resultSummary = result
@@ -6970,11 +7181,11 @@
           field.value = state.pressureQueue[field.dataset.pressureField];
         }
       });
+      pressureQueueBoardCache = { pressureQueue: state.pressureQueue, snapshot };
       renderPressureQueueProgress();
     }
 
-    function createPressureQueuePatchSnapshot() {
-      const inspection = inspectPressureQueueWorkspace();
+    function createPressureQueuePatchSnapshot(inspection = inspectPressureQueueWorkspace()) {
       const prepared = inspection.parsed.errors.length === 0
         && state.pressureQueue.annotations.length === inspection.parsed.model.path.length
         && state.pressureQueue.annotations.length > 0
@@ -6982,7 +7193,11 @@
           annotation.vehicleId === inspection.parsed.model.path[index]
         ));
       const liveIssues = prepared && inspection.compiled ? inspection.compiled.errors : [];
-      const issueIndex = createPressureIssueIndex(inspection.parsed.model, liveIssues);
+      const issueIndex = createPressureIssueIndex(
+        inspection.parsed.model,
+        liveIssues,
+        prepared ? inspection.compiled : null
+      );
       const hasMeaningfulInput = [
         'levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText'
       ].some(field => state.pressureQueue[field].trim() !== '');
@@ -7003,26 +7218,27 @@
         sources.push(annotation.vehicleId);
         releaseSources.set(annotation.releaseTriggerVehicleId, sources);
       });
-      const cards = prepared
-        ? inspection.parsed.model.path.map((vehicleId, index) => {
-          const vehicle = issueIndex.vehiclesById.get(vehicleId);
-          const annotation = state.pressureQueue.annotations[index];
-          return {
-            vehicleId,
-            html: renderPressureVehicleCard(
-              inspection.parsed.model,
-              vehicle,
-              annotation,
-              index,
-              releaseSources,
-              issueIndex.issuesByVehicleId.get(vehicleId) || [],
-              issueIndex.conflictedIds,
-              issueIndex.stepById
-            )
-          };
-        })
-        : [];
-      return { inspection, prepared, issueIndex, displayedErrors, cards };
+      return { inspection, prepared, issueIndex, displayedErrors, releaseSources };
+    }
+
+    function renderPressureVehicleCardFromSnapshot(snapshot, vehicleId) {
+      const step = snapshot.issueIndex.stepById.get(vehicleId);
+      if (!snapshot.prepared || !Number.isSafeInteger(step)) return '';
+      const index = step - 1;
+      const vehicle = snapshot.issueIndex.vehiclesById.get(vehicleId);
+      const annotation = snapshot.inspection.parsed.model.annotations[index];
+      return vehicle && annotation
+        ? renderPressureVehicleCard(
+          snapshot.inspection.parsed.model,
+          vehicle,
+          annotation,
+          index,
+          snapshot.releaseSources,
+          snapshot.issueIndex.issuesByVehicleId.get(vehicleId) || [],
+          snapshot.issueIndex.conflictedIds,
+          snapshot.issueIndex.stepById
+        )
+        : '';
     }
 
     function createPressureCardElement(html) {
@@ -7031,8 +7247,17 @@
       return template.content.firstElementChild;
     }
 
+    function getCachedPressureQueueBoardSnapshot() {
+      return pressureQueueBoardCache
+        && pressureQueueBoardCache.pressureQueue === state.pressureQueue
+        ? pressureQueueBoardCache.snapshot
+        : null;
+    }
+
     function updatePressureFilterControlsInPlace(snapshot = null) {
-      const currentSnapshot = snapshot || createPressureQueuePatchSnapshot();
+      const currentSnapshot = snapshot
+        || getCachedPressureQueueBoardSnapshot()
+        || createPressureQueuePatchSnapshot();
       workspace.querySelectorAll('[data-pressure-filter]').forEach(button => {
         const active = button.dataset.pressureFilter === pressureQueueFilter;
         button.classList.toggle('is-active', active);
@@ -7075,7 +7300,10 @@
       }
 
       const route = workspace.querySelector('.pressure-card-route');
-      if (!route) return;
+      if (!route) {
+        render();
+        return;
+      }
       if (!snapshot.prepared) {
         route.innerHTML = '<p class="empty-sequence">输入合法关卡并点击“准备路径标注”，调度票将按正确路径出现。</p>';
       } else {
@@ -7083,7 +7311,8 @@
           [...route.querySelectorAll('.pressure-vehicle-card[data-vehicle-id]')]
             .map(card => [Number(card.dataset.vehicleId), card])
         );
-        const desiredNodes = snapshot.cards.map(({ vehicleId, html }) => {
+        const desiredNodes = snapshot.inspection.parsed.model.path.map(vehicleId => {
+          const html = renderPressureVehicleCardFromSnapshot(snapshot, vehicleId);
           const desired = createPressureCardElement(html);
           const existing = existingById.get(vehicleId);
           if (existing && existing.outerHTML === desired.outerHTML) {
@@ -7106,6 +7335,129 @@
         });
       }
       updatePressureFilterControlsInPlace(snapshot);
+      pressureQueueBoardCache = { pressureQueue: state.pressureQueue, snapshot };
+      renderPressureQueueProgress();
+    }
+
+    function createPressureAnnotationPatchSnapshot(previousSnapshot) {
+      if (!previousSnapshot
+        || !previousSnapshot.prepared
+        || previousSnapshot.inspection.parsed.errors.length > 0) {
+        return null;
+      }
+      const previousModel = previousSnapshot.inspection.parsed.model;
+      const annotations = state.pressureQueue.annotations;
+      if (annotations.length !== previousModel.path.length
+        || annotations.some((annotation, index) => annotation.vehicleId !== previousModel.path[index])) {
+        return null;
+      }
+      const model = { ...previousModel, annotations };
+      const compiled = window.PressureQueueCore.compileConstraints(model);
+      return createPressureQueuePatchSnapshot({
+        parsed: { model, errors: [] },
+        compiled,
+        issues: compiled.errors
+      });
+    }
+
+    function pressureNumberArraysEqual(left = [], right = []) {
+      return left.length === right.length && left.every((value, index) => value === right[index]);
+    }
+
+    function getPressureVehicleIssueSignature(snapshot, vehicleId) {
+      return (snapshot.issueIndex.issuesByVehicleId.get(vehicleId) || [])
+        .map(issue => `${issue.code || ''}:${PRESSURE_ISSUE_LABELS[issue.code] || issue.message || ''}`)
+        .join('|');
+    }
+
+    function getAffectedPressureVehicleIds(vehicleId, previousAnnotation, previousSnapshot, nextSnapshot) {
+      const affectedIds = new Set([vehicleId]);
+      const addBoundedId = candidate => {
+        if (Number.isSafeInteger(candidate) && nextSnapshot.issueIndex.stepById.has(candidate)) {
+          affectedIds.add(candidate);
+        }
+      };
+      addBoundedId(previousAnnotation.releaseTriggerVehicleId);
+      const nextAnnotation = state.pressureQueue.annotations.find(item => item.vehicleId === vehicleId);
+      if (nextAnnotation) addBoundedId(nextAnnotation.releaseTriggerVehicleId);
+
+      nextSnapshot.inspection.parsed.model.path.forEach(candidateId => {
+        if (!pressureNumberArraysEqual(
+          previousSnapshot.releaseSources.get(candidateId) || [],
+          nextSnapshot.releaseSources.get(candidateId) || []
+        )
+          || getPressureVehicleIssueSignature(previousSnapshot, candidateId)
+            !== getPressureVehicleIssueSignature(nextSnapshot, candidateId)
+          || previousSnapshot.issueIndex.conflictedIds.has(candidateId)
+            !== nextSnapshot.issueIndex.conflictedIds.has(candidateId)) {
+          affectedIds.add(candidateId);
+        }
+      });
+      return affectedIds;
+    }
+
+    function patchPressureAnnotationChangeInPlace(
+      vehicleId,
+      previousAnnotation,
+      previousCache,
+      previousPressureQueue
+    ) {
+      if (!previousCache
+        || previousCache.pressureQueue !== previousPressureQueue
+        || state.activeStage !== 'pressureQueue'
+        || !workspace.querySelector('.pressure-workspace')) {
+        patchPressureQueueStageInPlace();
+        return;
+      }
+
+      let snapshot;
+      try {
+        snapshot = createPressureAnnotationPatchSnapshot(previousCache.snapshot);
+      } catch {
+        snapshot = null;
+      }
+      const route = workspace.querySelector('.pressure-card-route');
+      if (!snapshot || !snapshot.prepared || !route) {
+        patchPressureQueueStageInPlace();
+        return;
+      }
+
+      const affectedIds = getAffectedPressureVehicleIds(
+        vehicleId,
+        previousAnnotation,
+        previousCache.snapshot,
+        snapshot
+      );
+      const affectedInPathOrder = snapshot.inspection.parsed.model.path
+        .filter(candidateId => affectedIds.has(candidateId));
+      const existingById = new Map(affectedInPathOrder.map(candidateId => [
+        candidateId,
+        route.querySelector(`.pressure-vehicle-card[data-vehicle-id="${candidateId}"]`)
+      ]));
+      if ([...existingById.values()].some(card => !card)) {
+        patchPressureQueueStageInPlace();
+        return;
+      }
+
+      affectedInPathOrder.forEach(candidateId => {
+        const html = renderPressureVehicleCardFromSnapshot(snapshot, candidateId);
+        const desired = createPressureCardElement(html);
+        const existing = existingById.get(candidateId);
+        if (desired && existing.outerHTML !== desired.outerHTML) existing.replaceWith(desired);
+      });
+
+      const errors = workspace.querySelector('#pressureQueueErrors');
+      if (errors) {
+        errors.innerHTML = snapshot.displayedErrors
+          .map(message => `<div class="pressure-error-item">${escapePressureHtml(message)}</div>`)
+          .join('');
+      }
+      const resultSummary = workspace.querySelector('.pressure-result-summary');
+      if (resultSummary) resultSummary.textContent = '';
+      const boardCount = workspace.querySelector('.pressure-board-heading .empty-sequence');
+      if (boardCount) boardCount.textContent = `${state.pressureQueue.annotations.length} 辆车 · 按路径排序`;
+      updatePressureFilterControlsInPlace(snapshot);
+      pressureQueueBoardCache = { pressureQueue: state.pressureQueue, snapshot };
       renderPressureQueueProgress();
     }
 
@@ -7493,15 +7845,17 @@
       };
     }
 
-    function getPressureQueueErrorMessages(status, errors, model) {
+    function getPressureQueueErrorMessages(status, errors, model, compiled = null) {
       const statusLabels = {
         input_error: '输入错误',
         constraint_conflict: '约束冲突',
         budget_exhausted: '预算耗尽'
       };
       const label = statusLabels[status] || '生成失败';
-      const issueMessages = Array.isArray(errors)
-        ? errors.map(issue => formatPressureIssue(model, issue))
+      const issues = Array.isArray(errors) ? errors : [];
+      const issueIndex = createPressureIssueIndex(model, issues, compiled);
+      const issueMessages = issues.length > 0
+        ? issues.map(issue => formatPressureIssue(model, issue, issueIndex))
         : [];
       return issueMessages.length > 0
         ? issueMessages.map(message => `${label}：${message}`)
@@ -7555,7 +7909,12 @@
           pressureQueue: {
             ...nextState.pressureQueue,
             result,
-            errors: getPressureQueueErrorMessages('constraint_conflict', compiled.errors, parsed.model)
+            errors: getPressureQueueErrorMessages(
+              'constraint_conflict',
+              compiled.errors,
+              parsed.model,
+              compiled
+            )
           }
         });
         return result;
@@ -7580,7 +7939,7 @@
           pressureQueue: {
             ...nextState.pressureQueue,
             result,
-            errors: getPressureQueueErrorMessages(result.status, result.errors, parsed.model)
+            errors: getPressureQueueErrorMessages(result.status, result.errors, parsed.model, compiled)
           }
         });
         return result;
@@ -7599,7 +7958,7 @@
           pressureQueue: {
             ...nextState.pressureQueue,
             result,
-            errors: getPressureQueueErrorMessages(result.status, result.errors, parsed.model)
+            errors: getPressureQueueErrorMessages(result.status, result.errors, parsed.model, compiled)
           }
         });
         return result;
@@ -7658,7 +8017,7 @@
 
         const errors = result.status === 'success'
           ? []
-          : getPressureQueueErrorMessages(result.status, result.errors, parsed.model);
+          : getPressureQueueErrorMessages(result.status, result.errors, parsed.model, compiled);
         updateState({
           ...state,
           pressureQueue: {
@@ -7898,8 +8257,17 @@
         && typeof target.selectionStart === 'number'
         ? { start: target.selectionStart, end: target.selectionEnd }
         : null;
+      const previousPressureQueue = state.pressureQueue;
+      const previousCache = pressureQueueBoardCache;
       cancelPressureQueueRun(false);
-      updatePressureStateInPlace(setPressureQueueAnnotation(state, vehicleId, patch));
+      state = setPressureQueueAnnotation(state, vehicleId, patch);
+      updateSaveFeedback(saveState(state));
+      patchPressureAnnotationChangeInPlace(
+        vehicleId,
+        annotation,
+        previousCache,
+        previousPressureQueue
+      );
       const replacement = workspace.querySelector(`.pressure-vehicle-card[data-vehicle-id="${vehicleId}"] ${focusSelector}`);
       if (replacement instanceof HTMLElement) {
         replacement.focus({ preventScroll: true });

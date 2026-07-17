@@ -252,6 +252,58 @@
           seed: '7',
           ...overrides
         });
+        const makeSafePressureFailureResult = (overrides = {}) => ({
+          status: 'budget_exhausted',
+          layout: null,
+          errors: [pressureCore.createIssue('budget_exhausted', 'test_budget', '测试预算耗尽')],
+          expanded: 8,
+          budget: 64,
+          ...overrides
+        });
+
+        function makeGenuinePressureState(levelName = '真实持久化线路') {
+          const base = core.createInitialState();
+          const pressureQueue = makePressureWorkspaceSlice({
+            levelName,
+            annotations: [
+              pressureCore.createAnnotation(1),
+              pressureCore.createAnnotation(2),
+              pressureCore.createAnnotation(3)
+            ]
+          });
+          const candidate = { ...base, activeStage: 'pressureQueue', pressureQueue };
+          const parsed = core.parsePressureQueueModel(candidate);
+          const result = pressureCore.generate(parsed.model, {
+            budget: parsed.model.searchBudget,
+            seed: parsed.model.seed
+          });
+          return {
+            ...candidate,
+            pressureQueue: { ...pressureQueue, result, errors: [] }
+          };
+        }
+
+        function makeLongPressureWorkspace(overrides = {}) {
+          const vehicleIds = Array.from({ length: 80 }, (_, index) => index + 1);
+          const base = core.createInitialState();
+          const annotations = overrides.annotations
+            || vehicleIds.map(vehicleId => pressureCore.createAnnotation(vehicleId));
+          return {
+            ...base,
+            activeStage: 'pressureQueue',
+            pressureQueue: makePressureWorkspaceSlice({
+              conveyorCapacity: '4',
+              passengerQueueText: Array(320).fill('1').join(','),
+              vehicleTableText: [
+                '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+                ...vehicleIds.map(vehicleId => `${vehicleId}\t1\t4\t0\t\t`)
+              ].join('\n'),
+              clickSequenceText: vehicleIds.join(','),
+              annotations,
+              ...overrides
+            })
+          };
+        }
 
         function showPressureWorkspace(overrides = {}) {
           const current = core.createInitialState();
@@ -273,6 +325,97 @@
           }
           appWindow.setTimeout(() => waitForPressureCondition(predicate, callback, attempts - 1), 0);
         };
+
+        const isStructuredPressureFailure = result => Boolean(
+          result
+          && ['input_error', 'constraint_conflict', 'budget_exhausted'].includes(result.status)
+          && result.layout === null
+          && Number.isSafeInteger(result.expanded)
+          && result.expanded >= 0
+          && Number.isSafeInteger(result.budget)
+          && result.budget >= 0
+          && Array.isArray(result.errors)
+        );
+
+        const seedPressureQualityPhase = () => {
+          const pressurePhaseBase = core.createInitialState();
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            ...pressurePhaseBase,
+            activeStage: 'pressureQueue',
+            pressureQueue: makePressureWorkspaceSlice({
+              levelName: '异步线路',
+              annotations: [
+                pressureCore.createAnnotation(1),
+                pressureCore.createAnnotation(2),
+                pressureCore.createAnnotation(3)
+              ]
+            })
+          }));
+          loadPhase = 'pressure-quality-async';
+          appWindow.location.reload();
+        };
+
+        if (loadPhase === 'pressure-persistence-status') {
+          test('刷新加载拒绝仅含 status 的伪 success 且不显示成功', () => {
+            const result = app.getState().pressureQueue.result;
+            assert(result === null || isStructuredPressureFailure(result), '仅含 status 的伪 success 刷新后仍被信任');
+            const progress = appDocument.querySelector('#pressureQueueProgress');
+            const summary = appDocument.querySelector('.pressure-result-summary');
+            assert(progress && !progress.textContent.includes('生成成功'), '仅含 status 的伪 success 刷新后仍在进度区显示生成成功');
+            assert(summary && !summary.textContent.includes('生成成功'), '仅含 status 的伪 success 刷新后仍在结果区显示生成成功');
+          });
+
+          const forgedLayoutState = makeGenuinePressureState('刷新伪布局');
+          forgedLayoutState.pressureQueue.result = {
+            ...forgedLayoutState.pressureQueue.result,
+            layout: { belt: [99, 99, 99, 99], left: [], right: [] },
+            verification: { errors: [] }
+          };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(forgedLayoutState));
+          loadPhase = 'pressure-persistence-forged-layout';
+          appWindow.location.reload();
+          return;
+        }
+
+        if (loadPhase === 'pressure-persistence-forged-layout') {
+          test('刷新加载独立验证并拒绝结构完整但不满足模型的伪 success', () => {
+            const result = app.getState().pressureQueue.result;
+            assert(result === null || isStructuredPressureFailure(result), '伪造布局 success 刷新后仍被信任');
+            const progress = appDocument.querySelector('#pressureQueueProgress');
+            const summary = appDocument.querySelector('.pressure-result-summary');
+            assert(progress && !progress.textContent.includes('生成成功'), '伪造布局 success 刷新后仍在进度区显示生成成功');
+            assert(summary && !summary.textContent.includes('生成成功'), '伪造布局 success 刷新后仍在结果区显示生成成功');
+          });
+
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(makeGenuinePressureState('刷新真实成功')));
+          loadPhase = 'pressure-persistence-genuine';
+          appWindow.location.reload();
+          return;
+        }
+
+        if (loadPhase === 'pressure-persistence-genuine') {
+          test('刷新加载保留真实 success、规范 verification、JSON 稳定性和引用分离', () => {
+            const loaded = app.getState();
+            const result = loaded.pressureQueue.result;
+            equal(result.status, 'success', '刷新后真实 success 未保留');
+            const parsed = core.parsePressureQueueModel(loaded);
+            const strict = pressureCore.verify(
+              parsed.model,
+              pressureCore.compileConstraints(parsed.model),
+              result.layout
+            );
+            equal(result.verification, strict, '刷新后 success verification 不是规范严格验证');
+            equal(JSON.parse(JSON.stringify(result)), result, '刷新后的真实 success 不能稳定 JSON 往返');
+            const rawStored = JSON.parse(localStorage.getItem(STORAGE_KEY));
+            const loadedLayout = clone(result.layout);
+            assert(result !== rawStored.pressureQueue.result, '刷新加载结果共享存储解析对象引用');
+            rawStored.pressureQueue.result.layout.belt[0] = 99;
+            equal(result.layout, loadedLayout, '存储副本修改污染了刷新加载结果');
+          });
+
+          seedPressureQualityPhase();
+          return;
+        }
 
         if (loadPhase === 'pressure-quality-async') {
           const originalPressureCore = appWindow.PressureQueueCore;
@@ -3122,7 +3265,7 @@
               searchBudget: '30000',
               seed: '2',
               annotations: [pressureCore.createAnnotation(7)],
-              result: { status: 'success', generatedQueue: [1, 2, 3] },
+              result: makeSafePressureFailureResult({ proof: { generatedQueue: [1, 2, 3] } }),
               errors: ['提示']
             },
             activeStage: 'pressureQueue'
@@ -3145,6 +3288,118 @@
             equal(core.saveState(extraKeyState), false, '带未知压力队列键的显式状态不应保存');
             equal(core.saveState(missingSliceState), false, '缺失压力队列切片的显式状态不应保存');
             equal(JSON.parse(localStorage.getItem(STORAGE_KEY)), validState, '非法状态不应覆盖已保存的合法压力队列状态');
+          });
+        });
+
+        test('保存拒绝缺字段或布局伪造的 success 且不覆盖既有真实结果', () => {
+          const genuineState = makeGenuinePressureState('保存防伪基线');
+          equal(genuineState.pressureQueue.result.status, 'success', '前置条件：真实小模型未生成 success');
+          const missingLayout = clone(genuineState.pressureQueue.result);
+          delete missingLayout.layout;
+          const missingCounters = clone(genuineState.pressureQueue.result);
+          delete missingCounters.expanded;
+          delete missingCounters.budget;
+          const forgedLayout = {
+            ...clone(genuineState.pressureQueue.result),
+            layout: { belt: [99, 99, 99, 99], left: [], right: [] },
+            verification: { errors: [] }
+          };
+          const forgedResults = [
+            { label: '仅 status', value: { status: 'success' } },
+            { label: '缺失 layout', value: missingLayout },
+            { label: '缺失计数器', value: missingCounters },
+            { label: '结构可信但未通过模型验证的 layout', value: forgedLayout }
+          ];
+
+          withStoredState(null, () => {
+            assert(core.saveState(genuineState), '真实 success 基线应保存成功');
+            const storedBaseline = localStorage.getItem(STORAGE_KEY);
+            forgedResults.forEach(({ label, value }) => {
+              const forgedState = {
+                ...genuineState,
+                pressureQueue: { ...genuineState.pressureQueue, result: value }
+              };
+              equal(core.saveState(forgedState), false, `${label} 的伪 success 不应保存`);
+              equal(localStorage.getItem(STORAGE_KEY), storedBaseline, `${label} 保存失败后覆盖了既有真实结果`);
+            });
+          });
+        });
+
+        test('持久化仅接受结构安全的三种失败终态并拒绝 running、未知状态和畸形失败', () => {
+          const allowed = [
+            { status: 'input_error', category: 'input_error' },
+            { status: 'constraint_conflict', category: 'constraint_conflict' },
+            { status: 'budget_exhausted', category: 'budget_exhausted' }
+          ];
+          allowed.forEach(({ status, category }, index) => {
+            const result = makeSafePressureFailureResult({
+              status,
+              errors: [pressureCore.createIssue(category, `persistence_${status}`, `${status} 测试终态`)],
+              expanded: index,
+              budget: 64
+            });
+            const state = {
+              ...core.createInitialState(),
+              activeStage: 'pressureQueue',
+              pressureQueue: { ...core.createInitialState().pressureQueue, result }
+            };
+            withStoredState(null, () => {
+              assert(core.saveState(state), `${status} 安全失败终态应保存成功`);
+              equal(JSON.parse(localStorage.getItem(STORAGE_KEY)).pressureQueue.result, result, `${status} JSON 往返错误`);
+              equal(core.loadState().pressureQueue.result, result, `${status} 加载结果错误`);
+            });
+          });
+
+          const invalidResults = [
+            { label: 'running', value: makeSafePressureFailureResult({ status: 'running' }) },
+            { label: '未知 status', value: makeSafePressureFailureResult({ status: 'mystery' }) },
+            { label: '失败终态缺失 layout', value: (() => {
+              const result = makeSafePressureFailureResult();
+              delete result.layout;
+              return result;
+            })() },
+            { label: '失败终态携带 layout', value: makeSafePressureFailureResult({ layout: { belt: [], left: [], right: [] } }) },
+            { label: '失败终态 expanded 非安全整数', value: makeSafePressureFailureResult({ expanded: Number.MAX_SAFE_INTEGER + 1 }) },
+            { label: '失败终态 budget 为负数', value: makeSafePressureFailureResult({ budget: -1 }) },
+            { label: '失败终态 errors 非结构化 issue', value: makeSafePressureFailureResult({ errors: ['not-an-issue'] }) }
+          ];
+          const baseline = makeGenuinePressureState('失败终态校验基线');
+          withStoredState(null, () => {
+            assert(core.saveState(baseline), '失败终态校验前未能保存真实基线');
+            const storedBaseline = localStorage.getItem(STORAGE_KEY);
+            invalidResults.forEach(({ label, value }) => {
+              const state = {
+                ...baseline,
+                pressureQueue: { ...baseline.pressureQueue, result: value }
+              };
+              equal(core.saveState(state), false, `${label} 不应通过持久化校验`);
+              equal(localStorage.getItem(STORAGE_KEY), storedBaseline, `${label} 覆盖了真实基线`);
+            });
+          });
+        });
+
+        test('真实 success 保存加载后保留规范严格验证并与来源彻底分离', () => {
+          const genuineState = makeGenuinePressureState('真实 success 往返');
+          const parsed = core.parsePressureQueueModel(genuineState);
+          const strict = pressureCore.verify(
+            parsed.model,
+            pressureCore.compileConstraints(parsed.model),
+            genuineState.pressureQueue.result.layout
+          );
+          equal(genuineState.pressureQueue.result.status, 'success', '前置条件：真实结果不是 success');
+          equal(genuineState.pressureQueue.result.verification, strict, '前置条件：生成结果不是规范严格验证');
+
+          withStoredState(null, () => {
+            assert(core.saveState(genuineState), '真实 success 应保存成功');
+            const loaded = core.loadState();
+            equal(loaded.pressureQueue.result.status, 'success', '真实 success 加载后丢失');
+            equal(loaded.pressureQueue.result.verification, strict, '加载后 verification 不是规范严格验证');
+            equal(JSON.parse(JSON.stringify(loaded.pressureQueue.result)), loaded.pressureQueue.result, '真实 success 不能稳定 JSON 往返');
+            assert(loaded.pressureQueue.result !== genuineState.pressureQueue.result, '加载结果共享 success 顶层引用');
+            assert(loaded.pressureQueue.result.layout !== genuineState.pressureQueue.result.layout, '加载结果共享 layout 引用');
+            const secondLoad = core.loadState();
+            secondLoad.pressureQueue.result.layout.belt[0] = 99;
+            equal(loaded.pressureQueue.result.layout, genuineState.pressureQueue.result.layout, '另一加载副本修改污染了已加载 success');
           });
         });
 
@@ -3259,13 +3514,12 @@
         });
 
         test('父窗口、应用 iframe 与 JSON literal 的嵌套结果均可稳定往返', () => {
-          const source = {
-            status: 'success',
+          const source = makeSafePressureFailureResult({
             proof: {
               checks: [true, null, { name: 'cross-realm', values: [[1, 2], [3, 4]] }],
               summary: { expanded: 12 }
             }
-          };
+          });
           const validResults = [
             { label: '父窗口 literal', value: source },
             { label: '应用 iframe JSON', value: appWindow.JSON.parse(JSON.stringify(source)) },
@@ -3342,15 +3596,14 @@
         });
 
         test('普通嵌套压力队列结果可稳定保存、JSON 往返和加载', () => {
-          const result = {
-            status: 'success',
+          const result = makeSafePressureFailureResult({
             score: 0.75,
             generatedQueue: [1, 2, 3],
             proof: {
               checks: [true, null, { name: 'slot-pressure', passed: true }],
               summary: { expanded: 24, deterministic: true }
             }
-          };
+          });
           const state = {
             ...core.createInitialState(),
             pressureQueue: {
@@ -3374,13 +3627,12 @@
         });
 
         test('压力队列迁移深拷贝 result 且双向修改互不影响', () => {
-          const inputResult = {
-            status: 'success',
+          const inputResult = makeSafePressureFailureResult({
             proof: {
               steps: [{ vehicleId: 7, passed: true }],
               queue: [1, 2, 3]
             }
-          };
+          });
           const input = {
             ...core.createInitialState(),
             pressureQueue: {
@@ -3521,7 +3773,7 @@
             pressureQueue: {
               ...base.pressureQueue,
               annotations: [annotation],
-              result: { status: 'stale' },
+              result: makeSafePressureFailureResult(),
               errors: ['stale']
             }
           };
@@ -3851,6 +4103,36 @@
           );
         });
 
+        test('预告总量冲突排除 count 为零的车辆并只标记真实参与者', () => {
+          const annotations = [
+            { ...pressureCore.createAnnotation(1), rightPreview: { mode: 'custom', count: 0 } },
+            { ...pressureCore.createAnnotation(2), rightPreview: { mode: 'custom', count: 6 } },
+            { ...pressureCore.createAnnotation(3), rightPreview: { mode: 'custom', count: 6 } }
+          ];
+          showPressureWorkspace({ annotations });
+          const parsed = core.parsePressureQueueModel(app.getState());
+          equal(
+            pressureCore.compileConstraints(parsed.model).errors.map(issue => issue.code),
+            ['preview_sum_exceeds_ten'],
+            '0/6/6 预告场景应只产生总量超过十冲突'
+          );
+          appDocument.querySelector('[data-pressure-filter="conflicts"]').click();
+          equal(
+            [...appDocument.querySelectorAll('.pressure-vehicle-card:not([hidden])')]
+              .map(card => Number(card.dataset.vehicleId)),
+            [2, 3],
+            '冲突筛选错误包含 count 为零的车辆或遗漏真实参与者'
+          );
+          const zeroCard = appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="1"]');
+          assert(!zeroCard.classList.contains('has-conflict'), 'count 为零的车辆错误带有冲突 class');
+          assert(!zeroCard.querySelector('.pressure-conflict-chip'), 'count 为零的车辆错误带有冲突芯片');
+          [2, 3].forEach(vehicleId => {
+            const card = appDocument.querySelector(`.pressure-vehicle-card[data-vehicle-id="${vehicleId}"]`);
+            assert(card.classList.contains('has-conflict'), `真实参与车辆 #${vehicleId} 缺少冲突 class`);
+            assert(card.querySelector('.pressure-conflict-chip'), `真实参与车辆 #${vehicleId} 缺少冲突芯片`);
+          });
+        });
+
         test('标签筛选原位更新可见性并保持控制焦点与卡片 DOM 身份', () => {
           showPressureWorkspace();
           appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
@@ -3952,6 +4234,132 @@
           equal(longPathCardCount, 80, '长路径未完整渲染 80 张卡片');
           equal(longPathFirstTriggerCount, 80, '长路径首卡触发选项数量错误');
           assert(longPathIndexOfCalls <= 80, `长路径渲染执行了 ${longPathIndexOfCalls} 次 indexOf，存在重复路径扫描`);
+        });
+
+        test('80 车单卡编辑只解析变更卡并保留其余 79 张卡片身份', () => {
+          app.updateState(makeLongPressureWorkspace());
+          const inputRegion = appDocument.querySelector('.pressure-input-panel');
+          const route = appDocument.querySelector('.pressure-card-route');
+          const cardsBefore = new Map(
+            [...route.querySelectorAll('.pressure-vehicle-card')]
+              .map(card => [Number(card.dataset.vehicleId), card])
+          );
+          const originalCreateElement = appDocument.createElement;
+          const hadOwnCreateElement = Object.prototype.hasOwnProperty.call(appDocument, 'createElement');
+          const observer = new appWindow.MutationObserver(() => {});
+          let templateCreations = 0;
+          observer.observe(route, { childList: true });
+          try {
+            appDocument.createElement = function instrumentedPressureCreateElement(tagName, ...args) {
+              if (String(tagName).toLowerCase() === 'template') templateCreations += 1;
+              return Reflect.apply(originalCreateElement, this, [tagName, ...args]);
+            };
+            const settlement = route.querySelector('.pressure-vehicle-card[data-vehicle-id="1"] [data-annotation-field="settlementTarget"]');
+            settlement.value = 'instant';
+            dispatchChange(settlement);
+
+            const mutations = observer.takeRecords();
+            const mutatedIds = mutations.flatMap(record => [...record.removedNodes, ...record.addedNodes])
+              .filter(node => node instanceof appWindow.Element && node.matches('.pressure-vehicle-card[data-vehicle-id]'))
+              .map(card => Number(card.dataset.vehicleId));
+            assert(templateCreations <= 3, `单卡编辑创建了 ${templateCreations} 个 template，仍解析了整条 80 车路径`);
+            assert(mutatedIds.every(vehicleId => vehicleId === 1), `单卡编辑替换了无关卡片：${mutatedIds.join(',')}`);
+            assert(appDocument.querySelector('.pressure-input-panel') === inputRegion, '单卡编辑替换了输入区');
+            for (let vehicleId = 2; vehicleId <= 80; vehicleId += 1) {
+              assert(route.querySelector(`.pressure-vehicle-card[data-vehicle-id="${vehicleId}"]`) === cardsBefore.get(vehicleId), `单卡编辑替换了无关车辆 #${vehicleId}`);
+            }
+          } finally {
+            if (hadOwnCreateElement) appDocument.createElement = originalCreateElement;
+            else delete appDocument.createElement;
+            observer.disconnect();
+          }
+        });
+
+        test('80 车触发来源涟漪更新只解析 1、2、3 号关联卡片', () => {
+          const annotations = Array.from({ length: 80 }, (_, index) => pressureCore.createAnnotation(index + 1));
+          annotations[0] = {
+            ...annotations[0],
+            settlementTarget: 'empty',
+            pressureSlot: true,
+            releaseTriggerVehicleId: 2
+          };
+          app.updateState(makeLongPressureWorkspace({ annotations }));
+          const route = appDocument.querySelector('.pressure-card-route');
+          const cardsBefore = new Map(
+            [...route.querySelectorAll('.pressure-vehicle-card')]
+              .map(card => [Number(card.dataset.vehicleId), card])
+          );
+          const originalCreateElement = appDocument.createElement;
+          const hadOwnCreateElement = Object.prototype.hasOwnProperty.call(appDocument, 'createElement');
+          const observer = new appWindow.MutationObserver(() => {});
+          let templateCreations = 0;
+          observer.observe(route, { childList: true });
+          try {
+            appDocument.createElement = function instrumentedRippleCreateElement(tagName, ...args) {
+              if (String(tagName).toLowerCase() === 'template') templateCreations += 1;
+              return Reflect.apply(originalCreateElement, this, [tagName, ...args]);
+            };
+            const trigger = route.querySelector('.pressure-vehicle-card[data-vehicle-id="1"] [data-annotation-field="releaseTriggerVehicleId"]');
+            equal(trigger.value, '2', '前置条件：车辆 #1 初始释放触发不是 #2');
+            trigger.value = '3';
+            dispatchChange(trigger);
+
+            const mutations = observer.takeRecords();
+            const mutatedIds = mutations.flatMap(record => [...record.removedNodes, ...record.addedNodes])
+              .filter(node => node instanceof appWindow.Element && node.matches('.pressure-vehicle-card[data-vehicle-id]'))
+              .map(card => Number(card.dataset.vehicleId));
+            const allowedIds = new Set([1, 2, 3]);
+            assert(templateCreations <= 5, `触发来源涟漪创建了 ${templateCreations} 个 template，仍解析了整条 80 车路径`);
+            assert(mutatedIds.every(vehicleId => allowedIds.has(vehicleId)), `触发来源涟漪替换了无关卡片：${mutatedIds.join(',')}`);
+            for (let vehicleId = 4; vehicleId <= 80; vehicleId += 1) {
+              assert(route.querySelector(`.pressure-vehicle-card[data-vehicle-id="${vehicleId}"]`) === cardsBefore.get(vehicleId), `触发来源涟漪替换了无关车辆 #${vehicleId}`);
+            }
+          } finally {
+            if (hadOwnCreateElement) appDocument.createElement = originalCreateElement;
+            else delete appDocument.createElement;
+            observer.disconnect();
+          }
+        });
+
+        test('80 车筛选与折叠不创建 template、不替换卡片且保持全部身份', () => {
+          const annotations = Array.from({ length: 80 }, (_, index) => pressureCore.createAnnotation(index + 1));
+          annotations[1] = {
+            ...annotations[1],
+            rightPreview: { mode: 'medium', count: null }
+          };
+          app.updateState(makeLongPressureWorkspace({ annotations }));
+          const route = appDocument.querySelector('.pressure-card-route');
+          const cardsBefore = new Map(
+            [...route.querySelectorAll('.pressure-vehicle-card')]
+              .map(card => [Number(card.dataset.vehicleId), card])
+          );
+          const originalCreateElement = appDocument.createElement;
+          const hadOwnCreateElement = Object.prototype.hasOwnProperty.call(appDocument, 'createElement');
+          const observer = new appWindow.MutationObserver(() => {});
+          let templateCreations = 0;
+          observer.observe(route, { childList: true });
+          try {
+            appDocument.createElement = function instrumentedVisibilityCreateElement(tagName, ...args) {
+              if (String(tagName).toLowerCase() === 'template') templateCreations += 1;
+              return Reflect.apply(originalCreateElement, this, [tagName, ...args]);
+            };
+            appDocument.querySelector('[data-pressure-filter="preview"]').click();
+            appDocument.querySelector('[data-pressure-filter="all"]').click();
+            const collapse = appDocument.querySelector('[data-pressure-collapse-normal]');
+            collapse.click();
+            collapse.click();
+
+            const mutations = observer.takeRecords();
+            equal(templateCreations, 0, '筛选或折叠创建了卡片 template');
+            equal(mutations.length, 0, '筛选或折叠替换、插入或删除了卡片');
+            for (let vehicleId = 1; vehicleId <= 80; vehicleId += 1) {
+              assert(route.querySelector(`.pressure-vehicle-card[data-vehicle-id="${vehicleId}"]`) === cardsBefore.get(vehicleId), `筛选或折叠改变了车辆 #${vehicleId} 的 DOM 身份`);
+            }
+          } finally {
+            if (hadOwnCreateElement) appDocument.createElement = originalCreateElement;
+            else delete appDocument.createElement;
+            observer.disconnect();
+          }
         });
 
         test('压力标签筛选与折叠只改变可见性并保持路径顺序', () => {
@@ -4429,15 +4837,11 @@
           ...pressurePhaseBase,
           activeStage: 'pressureQueue',
           pressureQueue: makePressureWorkspaceSlice({
-            levelName: '异步线路',
-            annotations: [
-              pressureCore.createAnnotation(1),
-              pressureCore.createAnnotation(2),
-              pressureCore.createAnnotation(3)
-            ]
+            levelName: '刷新仅 status 伪成功',
+            result: { status: 'success' }
           })
         }));
-        loadPhase = 'pressure-quality-async';
+        loadPhase = 'pressure-persistence-status';
         appWindow.location.reload();
       } catch (error) {
         failSuite('测试页脚本异常', error);
