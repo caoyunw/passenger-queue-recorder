@@ -6094,8 +6094,7 @@
         .replace(/[\u0000-\u001f\u007f]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim()
-        .replaceAll('\\', '\\\\')
-        .replaceAll('|', '\\|')
+        .replace(/[\\`*_{}\[\]()#+\-.!|]/g, '\\$&')
         .replaceAll('<', '&lt;')
         .replaceAll('>', '&gt;');
     }

@@ -3602,7 +3602,7 @@
             assert(failedReport.includes(`状态：${label}`), `${status} 报告缺少精确状态标签`);
             assert(failedReport.includes('展开：'), `${status} 报告缺少展开数`);
             assert(failedReport.includes('预算：64'), `${status} 报告缺少预算`);
-            assert(failedReport.includes('结构化 \\| 消息 #'), `${status} 报告未压平或转义用户消息`);
+            assert(failedReport.includes('结构化 \\| 消息 \\#'), `${status} 报告未压平或转义用户消息`);
             assert(!failedReport.includes('## 适用队列'), `${status} 报告输出了可应用队列`);
           });
 
@@ -3621,6 +3621,20 @@
           });
           assert(typeof core.getPressureQueueReportText(hostile) === 'string', '访问器 state 报告未安全回退');
           equal(getterRuns, 0, '报告帮助函数执行了 state 访问器');
+        });
+
+        test('压力报告转义关卡名和颜色名中的 Markdown 内联结构', () => {
+          const hostileInline = '[x](https://evil.invalid) **x** _x_ `x` ![x](https://evil.invalid/image) # + - .';
+          const genuine = makeRichGenuinePressureState(hostileInline);
+          genuine.colors = genuine.colors.map(color => color.value === 1
+            ? { ...color, name: hostileInline }
+            : color);
+
+          const report = core.getPressureQueueReportText(genuine);
+          const escapedInline = '\\[x\\]\\(https://evil\\.invalid\\) \\*\\*x\\*\\* \\_x\\_ \\`x\\` \\!\\[x\\]\\(https://evil\\.invalid/image\\) \\# \\+ \\- \\.';
+          assert(report.includes(`# 压力队列生成报告｜${escapedInline}`), '关卡名 Markdown 内联结构未完整转义');
+          assert(report.includes(`${escapedInline} (1)`), '颜色名 Markdown 内联结构未完整转义');
+          assert(!report.includes(hostileInline), '报告仍包含可解析的原始 Markdown 内联结构');
         });
 
         test('加载规范真实 success 只执行一次编译和严格验证', () => {
