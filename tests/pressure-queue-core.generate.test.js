@@ -48,6 +48,23 @@ function makeThreePressureModel() {
   };
 }
 
+function makeReversePathModel(vehicleCount = 5) {
+  const vehicles = Array.from({ length: vehicleCount }, (_, index) => ({
+    id: index + 1,
+    colorValue: index + 1,
+    capacity: 4,
+    frontVehicleIds: [],
+    backVehicleIds: []
+  }));
+  return {
+    conveyorCapacity: 4,
+    passengers: vehicles.flatMap(vehicle => Array(4).fill(vehicle.colorValue)),
+    vehicles,
+    path: vehicles.map(vehicle => vehicle.id).reverse(),
+    annotations: vehicles.map(vehicle => core.createAnnotation(vehicle.id))
+  };
+}
+
 function colorCounts(values) {
   return Object.fromEntries(
     [...values.reduce((counts, value) => {
@@ -107,6 +124,69 @@ test('repeats the complete result exactly for the same input, options, and seed'
     json(core.generate(model, options)),
     json(core.generate(model, options))
   );
+});
+
+test('directs ordinary belt filler by earliest path step', () => {
+  const model = makeReversePathModel();
+  const expectedLayout = {
+    belt: [5, 5, 5, 5],
+    left: [],
+    right: [
+      4, 4, 4, 4,
+      3, 3, 3, 3,
+      2, 2, 2, 2,
+      1, 1, 1, 1
+    ]
+  };
+  assert.deepEqual(
+    json(core.verify(model, core.compileConstraints(model), expectedLayout).errors),
+    [],
+    'fixture must have a strict solution'
+  );
+
+  const result = core.generate(model, { budget: 20000, seed: 1 });
+
+  assert.equal(result.status, 'success');
+  assert.deepEqual(json(result.layout.belt), [5, 5, 5, 5]);
+  assert.deepEqual(
+    json(core.verify(model, core.compileConstraints(model), result.layout).errors),
+    []
+  );
+});
+
+test('bounds one large-model advance by deterministic work units', () => {
+  const model = makeReversePathModel(200);
+  const session = core.createSearchSession(model, { budget: 20000, seed: 1 });
+  const startedAt = process.hrtime.bigint();
+
+  const first = session.advance(256);
+
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+  assert(elapsedMs < 1000, `advance took ${elapsedMs.toFixed(1)}ms`);
+  assert.equal(first.status, 'running');
+  assert.equal(first.layout, null);
+  assert.equal(first.budget, 20000);
+  assert(first.expanded >= 1 && first.expanded <= 5, `expanded ${first.expanded}`);
+  assert(first.frontier > 0);
+
+  const second = session.advance(256);
+  assert.equal(second.status, 'running');
+  assert.equal(second.layout, null);
+  assert(second.expanded > first.expanded);
+  assert(second.expanded - first.expanded <= 5);
+  assert(second.expanded <= second.budget);
+});
+
+test('is independently deterministic for several safe seeds', () => {
+  const model = makeReversePathModel();
+  [0, 2, 37, Number.MAX_SAFE_INTEGER].forEach(seed => {
+    const options = { budget: 20000, seed };
+    assert.deepEqual(
+      json(core.generate(model, options)),
+      json(core.generate(model, options)),
+      `seed ${seed}`
+    );
+  });
 });
 
 test('budget one verifies at most one candidate and returns no approximate layout', () => {

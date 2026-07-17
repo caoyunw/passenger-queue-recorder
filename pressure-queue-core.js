@@ -2364,6 +2364,7 @@
   const DEFAULT_SEARCH_SEED = 1;
   const DEFAULT_ADVANCE_LIMIT = 256;
   const MAX_ADVANCE_LIMIT = 256;
+  const ADVANCE_WORK_UNIT_BUDGET = 5000;
 
   function cloneSearchValue(value) {
     const cloned = cloneJsonSafeDetail(value);
@@ -2396,6 +2397,37 @@
     return [...counts.keys()].sort((left, right) => left - right);
   }
 
+  function pathOrderedColors(model, base, counts) {
+    const path = inspectDenseNonNegativeIntegerArray(
+      readOwnDataValue(model, 'path').value
+    ).values;
+    const priorityByColor = new Map();
+    path.forEach((vehicleId, index) => {
+      const vehicle = base.vehiclesById.get(vehicleId);
+      const color = readOwnDataValue(vehicle, 'colorValue');
+      if (!color.present || !isNonNegativeInteger(color.value)) return;
+      const existing = priorityByColor.get(color.value);
+      const priority = { step: index + 1, vehicleId };
+      if (!existing
+        || priority.step < existing.step
+        || (priority.step === existing.step && priority.vehicleId < existing.vehicleId)) {
+        priorityByColor.set(color.value, priority);
+      }
+    });
+    return sortedColors(counts).sort((left, right) => {
+      const leftPriority = priorityByColor.get(left);
+      const rightPriority = priorityByColor.get(right);
+      if (leftPriority && rightPriority) {
+        return leftPriority.step - rightPriority.step
+          || leftPriority.vehicleId - rightPriority.vehicleId
+          || left - right;
+      }
+      if (leftPriority) return -1;
+      if (rightPriority) return 1;
+      return left - right;
+    });
+  }
+
   function takeColor(counts, colorValue, count) {
     const available = counts.get(colorValue) || 0;
     if (available < count) return false;
@@ -2404,9 +2436,15 @@
     return true;
   }
 
-  function appendAvailableColors(target, counts, needed, predicate) {
+  function appendAvailableColors(
+    target,
+    counts,
+    needed,
+    predicate,
+    orderedColors = sortedColors(counts)
+  ) {
     let remaining = needed;
-    for (const colorValue of sortedColors(counts)) {
+    for (const colorValue of orderedColors) {
       if (remaining < 1) break;
       if (!predicate(colorValue)) continue;
       const available = counts.get(colorValue) || 0;
@@ -2495,19 +2533,22 @@
       const color = readOwnDataValue(vehicle, 'colorValue');
       if (color.present && isNonNegativeInteger(color.value)) pressureColors.add(color.value);
     });
+    const ordinaryBeltColors = pathOrderedColors(model, base, remainingCounts);
 
     let beltNeeded = capacityProperty.value - belt.length;
     beltNeeded = appendAvailableColors(
       belt,
       remainingCounts,
       beltNeeded,
-      colorValue => !initialExactColors.has(colorValue) && !pressureColors.has(colorValue)
+      colorValue => !initialExactColors.has(colorValue) && !pressureColors.has(colorValue),
+      ordinaryBeltColors
     );
     beltNeeded = appendAvailableColors(
       belt,
       remainingCounts,
       beltNeeded,
-      colorValue => !initialExactColors.has(colorValue) && pressureColors.has(colorValue)
+      colorValue => !initialExactColors.has(colorValue) && pressureColors.has(colorValue),
+      ordinaryBeltColors
     );
     if (beltNeeded > 0) {
       return regionConflict(
@@ -2660,6 +2701,19 @@
     };
   }
 
+  function modelAdvanceCandidateLimit(model) {
+    const passengers = readOwnDataValue(model, 'passengers').value;
+    const vehicles = readOwnDataValue(model, 'vehicles').value;
+    const path = readOwnDataValue(model, 'path').value;
+    // One verification replays the immutable model. Treat each snapshot row/passenger
+    // as a work unit so larger models cooperatively yield after fewer candidates.
+    const modelWorkUnits = Math.max(
+      1,
+      passengers.length + vehicles.length + path.length
+    );
+    return Math.max(1, Math.floor(ADVANCE_WORK_UNIT_BUDGET / modelWorkUnits));
+  }
+
   function createSearchSession(inputModel, options = {}) {
     const budget = readSearchIntegerOption(
       options,
@@ -2706,24 +2760,42 @@
       leftLength: regionSeed.leftLength
     }];
     const seen = new Set([fingerprintCandidate(frontier[0])]);
+    const advanceCandidateLimit = modelAdvanceCandidateLimit(safeModel);
+    let frontierHead = 0;
     let expanded = 0;
     let lastErrors = [];
     let terminal = null;
 
+    function frontierCount() {
+      return frontier.length - frontierHead;
+    }
+
+    function compactFrontier() {
+      if (frontierHead < 1024 || frontierHead * 2 < frontier.length) return;
+      frontier.splice(0, frontierHead);
+      frontierHead = 0;
+    }
+
     function finish(result) {
       terminal = cloneSearchResult(result);
+      frontier.length = 0;
+      frontierHead = 0;
+      seen.clear();
       return cloneSearchResult(terminal);
     }
 
     function advance(requestedLimit = DEFAULT_ADVANCE_LIMIT) {
       if (terminal !== null) return cloneSearchResult(terminal);
-      const limit = isPositiveInteger(requestedLimit)
+      const callerLimit = isPositiveInteger(requestedLimit)
         ? Math.min(requestedLimit, MAX_ADVANCE_LIMIT)
         : DEFAULT_ADVANCE_LIMIT;
+      const limit = Math.min(callerLimit, advanceCandidateLimit);
       let processed = 0;
 
-      while (processed < limit && expanded < budget && frontier.length > 0) {
-        const candidate = frontier.shift();
+      while (processed < limit && expanded < budget && frontierCount() > 0) {
+        const candidate = frontier[frontierHead];
+        frontier[frontierHead] = null;
+        frontierHead += 1;
         const layout = makeCandidateLayout(regionSeed, candidate);
         let verification;
         try {
@@ -2760,15 +2832,17 @@
           frontier.push(neighbor);
         });
       }
+      compactFrontier();
 
-      if (expanded >= budget || frontier.length === 0) {
+      const exhaustedFrontier = frontierCount() === 0;
+      if (expanded >= budget || exhaustedFrontier) {
         return finish({
           status: 'budget_exhausted',
           layout: null,
           errors: lastErrors,
           expanded,
           budget,
-          exhaustedFrontier: frontier.length === 0
+          exhaustedFrontier
         });
       }
       return {
@@ -2777,7 +2851,7 @@
         errors: cloneSearchValue(lastErrors) || [],
         expanded,
         budget,
-        frontier: frontier.length
+        frontier: frontierCount()
       };
     }
 
