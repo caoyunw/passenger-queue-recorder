@@ -289,76 +289,97 @@
     return issue;
   }
 
-  function inspectDenseNonNegativeIntegerArray(value) {
+  const MAX_ARRAY_LENGTH = 0xffffffff;
+
+  function parseArrayIndexKey(key) {
+    if (typeof key !== 'string' || key === '') return null;
+    const index = Number(key);
+    return Number.isInteger(index)
+      && index >= 0
+      && index < MAX_ARRAY_LENGTH
+      && String(index) === key
+      ? index
+      : null;
+  }
+
+  function inspectDenseArrayEntries(value) {
     let isArray;
     try {
       isArray = Array.isArray(value);
     } catch {
-      return { valid: false, invalidIndices: [-1], values: [] };
+      return { dense: false, invalidIndex: -1, entries: [] };
     }
-    if (!isArray) return { valid: false, invalidIndices: [-1], values: [] };
+    if (!isArray) return { dense: false, invalidIndex: -1, entries: [] };
 
-    let length;
+    let lengthDescriptor;
+    let keys;
     try {
-      length = value.length;
+      lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+      keys = Reflect.ownKeys(value);
     } catch {
-      return { valid: false, invalidIndices: [-1], values: [] };
+      return { dense: false, invalidIndex: -1, entries: [] };
     }
-    const invalidIndices = [];
-    const values = new Array(length);
-    for (let index = 0; index < length; index += 1) {
+    if (!lengthDescriptor
+      || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value')
+      || !isNonNegativeInteger(lengthDescriptor.value)
+      || lengthDescriptor.value > MAX_ARRAY_LENGTH) {
+      return { dense: false, invalidIndex: -1, entries: [] };
+    }
+
+    const entries = [];
+    for (const key of keys) {
+      const index = parseArrayIndexKey(key);
+      if (index === null) continue;
       let descriptor;
       try {
-        descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        descriptor = Object.getOwnPropertyDescriptor(value, key);
       } catch {
-        invalidIndices.push(index);
-        continue;
+        return { dense: false, invalidIndex: index, entries: [] };
       }
-      if (!descriptor
-        || !Object.prototype.hasOwnProperty.call(descriptor, 'value')
-        || !isNonNegativeInteger(descriptor.value)) {
-        invalidIndices.push(index);
-      } else {
-        values[index] = descriptor.value;
+      if (!descriptor) {
+        return { dense: false, invalidIndex: index, entries: [] };
       }
+      entries.push({
+        index,
+        value: Object.prototype.hasOwnProperty.call(descriptor, 'value')
+          ? descriptor.value
+          : INVALID_JSON_DETAIL
+      });
     }
+
+    entries.sort((left, right) => left.index - right.index);
+    let expectedIndex = 0;
+    for (const entry of entries) {
+      if (entry.index !== expectedIndex) {
+        return { dense: false, invalidIndex: expectedIndex, entries: [] };
+      }
+      expectedIndex += 1;
+    }
+    if (expectedIndex !== lengthDescriptor.value) {
+      return { dense: false, invalidIndex: expectedIndex, entries: [] };
+    }
+
+    return { dense: true, invalidIndex: null, entries };
+  }
+
+  function inspectDenseNonNegativeIntegerArray(value) {
+    const inspection = inspectDenseArrayEntries(value);
+    if (!inspection.dense) {
+      return { valid: false, invalidIndices: [inspection.invalidIndex], values: [] };
+    }
+
+    const invalidIndices = [];
+    const values = inspection.entries.map(entry => {
+      if (!isNonNegativeInteger(entry.value)) invalidIndices.push(entry.index);
+      return entry.value;
+    });
     return { valid: invalidIndices.length === 0, invalidIndices, values };
   }
 
   function readDenseArrayEntries(value) {
-    let isArray;
-    try {
-      isArray = Array.isArray(value);
-    } catch {
-      return [];
-    }
-    if (!isArray) return [];
-
-    let lengthDescriptor;
-    try {
-      lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
-    } catch {
-      return [];
-    }
-    if (!lengthDescriptor
-      || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value')
-      || !isNonNegativeInteger(lengthDescriptor.value)) {
-      return [];
-    }
-
-    const entries = new Array(lengthDescriptor.value);
-    for (let index = 0; index < entries.length; index += 1) {
-      let descriptor;
-      try {
-        descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-      } catch {
-        descriptor = null;
-      }
-      entries[index] = descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
-        ? descriptor.value
-        : INVALID_JSON_DETAIL;
-    }
-    return entries;
+    const inspection = inspectDenseArrayEntries(value);
+    if (!inspection.dense) return [];
+    return inspection.entries.map(entry => entry.value);
   }
 
   function readOwnDataValue(value, key) {
@@ -689,7 +710,9 @@
     return annotation;
   }
 
-  function mergeGlobalColorConstraint(groups, item, conflictCode, errors) {
+  function mergeGlobalColorConstraint(groups, conflictedColors, item, conflictCode, errors) {
+    if (conflictedColors.has(item.colorValue)) return;
+
     const existing = groups.get(item.colorValue);
     if (!existing) {
       const group = {
@@ -708,6 +731,8 @@
     const durationMatches = !Object.prototype.hasOwnProperty.call(item, 'duration')
       || existing.duration === item.duration;
     if (existing.count !== item.count || !durationMatches) {
+      groups.delete(item.colorValue);
+      conflictedColors.add(item.colorValue);
       errors.push(createIssue(
         'constraint_conflict',
         conflictCode,
@@ -733,6 +758,18 @@
     }
 
     const errors = base.errors.map(error => cloneJsonSafeDetail(error));
+    if (errors.length > 0) {
+      return {
+        annotations: [],
+        pressureLinks: [],
+        initialOccupy: [],
+        laterOccupy: [],
+        rightPreview: [],
+        stepById: {},
+        errors
+      };
+    }
+
     const pathProperty = readOwnDataValue(input, 'path');
     const pathInspection = inspectDenseNonNegativeIntegerArray(pathProperty.value);
     const safePath = pathInspection.values.filter(isNonNegativeInteger);
@@ -757,8 +794,10 @@
       : null;
     const pressureLinks = [];
     const initialGroups = new Map();
+    const initialConflictedColors = new Set();
     const laterOccupy = [];
     const previewGroups = new Map();
+    const previewConflictedColors = new Set();
 
     annotationsToCompile.forEach(annotation => {
       const vehicle = base.vehiclesById.get(annotation.vehicleId);
@@ -844,6 +883,7 @@
         } else {
           mergeGlobalColorConstraint(
             initialGroups,
+            initialConflictedColors,
             { vehicleId, colorValue, count: strength.count, duration: strength.duration },
             'initial_occupy_color_conflict',
             errors
@@ -887,6 +927,7 @@
         } else {
           mergeGlobalColorConstraint(
             previewGroups,
+            previewConflictedColors,
             { vehicleId, colorValue, count },
             'preview_color_conflict',
             errors

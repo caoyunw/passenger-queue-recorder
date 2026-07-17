@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -76,6 +77,24 @@ function hasCode(compiled, code) {
   return constraintCodes(compiled).includes(code);
 }
 
+function assertEmptyDerivedConstraints(compiled) {
+  assert.deepEqual(json({
+    annotations: compiled.annotations,
+    pressureLinks: compiled.pressureLinks,
+    initialOccupy: compiled.initialOccupy,
+    laterOccupy: compiled.laterOccupy,
+    rightPreview: compiled.rightPreview,
+    stepById: compiled.stepById
+  }), {
+    annotations: [],
+    pressureLinks: [],
+    initialOccupy: [],
+    laterOccupy: [],
+    rightPreview: [],
+    stepById: {}
+  });
+}
+
 function recolor(vehicleIds, colorValue) {
   return makeVehicles().map(vehicle => (
     vehicleIds.includes(vehicle.id) ? { ...vehicle, colorValue } : vehicle
@@ -148,12 +167,14 @@ test('requires path unlock to unblock a vehicle clicked later on the safe path',
   const onlyEarlierVehicles = makeVehicles();
   onlyEarlierVehicles[0] = { ...onlyEarlierVehicles[0], frontVehicleIds: [2] };
   const earlier = compile({ 2: { pathUnlock: true } }, { vehicles: onlyEarlierVehicles }).compiled;
-  assert(hasCode(earlier, 'path_unlock_has_no_target'));
+  assert(earlier.errors.some(error => error.category === 'input_error'));
+  assertEmptyDerivedConstraints(earlier);
 
   const nonexistentReference = makeVehicles();
   nonexistentReference[4] = { ...nonexistentReference[4], frontVehicleIds: [99] };
   const nonexistent = compile({ 2: { pathUnlock: true } }, { vehicles: nonexistentReference }).compiled;
-  assert(hasCode(nonexistent, 'path_unlock_has_no_target'));
+  assert(nonexistent.errors.some(error => error.category === 'input_error'));
+  assertEmptyDerivedConstraints(nonexistent);
 });
 
 test('resolves all initial occupy strengths and rejects invalid count or duration boundaries', () => {
@@ -210,8 +231,7 @@ test('merges matching same-color initial labels and does not double-count confli
     2: { initialOccupy: { mode: 'custom', count: 2, duration: 1 } }
   }, { vehicles }).compiled;
   assert(hasCode(conflict, 'initial_occupy_color_conflict'));
-  assert.equal(conflict.initialOccupy.length, 1);
-  assert.equal(conflict.initialOccupy[0].count, 3);
+  assert.equal(conflict.initialOccupy.length, 0);
   assert(!hasCode(conflict, 'initial_occupy_sum_exceeds_capacity'));
 });
 
@@ -278,8 +298,79 @@ test('merges matching same-color previews and reports conflicts without double-c
     3: { rightPreview: { mode: 'custom', count: 4 } }
   }, { vehicles }).compiled;
   assert(hasCode(conflict, 'preview_color_conflict'));
-  assert.equal(conflict.rightPreview.find(item => item.colorValue === 8).count, 6);
+  assert.equal(conflict.rightPreview.some(item => item.colorValue === 8), false);
   assert(!hasCode(conflict, 'preview_sum_exceeds_ten'));
+});
+
+test('excludes conflicted initial colors deterministically and never revives them', () => {
+  const vehicles = [
+    { id: 1, colorValue: 9, capacity: 4, frontVehicleIds: [], backVehicleIds: [] },
+    { id: 2, colorValue: 9, capacity: 4, frontVehicleIds: [], backVehicleIds: [] },
+    { id: 3, colorValue: 8, capacity: 4, frontVehicleIds: [], backVehicleIds: [] },
+    { id: 4, colorValue: 9, capacity: 4, frontVehicleIds: [], backVehicleIds: [] }
+  ];
+  const passengers = passengersFor(vehicles);
+  const annotations = [
+    { ...core.createAnnotation(1), initialOccupy: { mode: 'custom', count: 3, duration: 1 } },
+    { ...core.createAnnotation(2), initialOccupy: { mode: 'custom', count: 2, duration: 1 } },
+    { ...core.createAnnotation(3), initialOccupy: { mode: 'custom', count: 2, duration: 1 } },
+    { ...core.createAnnotation(4), initialOccupy: { mode: 'custom', count: 3, duration: 1 } }
+  ];
+
+  const results = [[1, 2, 4, 3], [2, 4, 1, 3]].map(pathValue => core.compileConstraints({
+    conveyorCapacity: 4,
+    passengers,
+    vehicles,
+    path: pathValue,
+    annotations
+  }));
+
+  results.forEach(compiled => {
+    assert.deepEqual(json(constraintCodes(compiled)), ['initial_occupy_color_conflict']);
+    assert.deepEqual(json(compiled.initialOccupy), [{
+      vehicleId: 3,
+      colorValue: 8,
+      count: 2,
+      vehicleIds: [3],
+      duration: 1
+    }]);
+    assert(!hasCode(compiled, 'initial_occupy_sum_exceeds_capacity'));
+  });
+});
+
+test('excludes conflicted preview colors deterministically and never revives them', () => {
+  const vehicles = [
+    { id: 1, colorValue: 9, capacity: 4, frontVehicleIds: [], backVehicleIds: [] },
+    { id: 2, colorValue: 9, capacity: 4, frontVehicleIds: [], backVehicleIds: [] },
+    { id: 3, colorValue: 8, capacity: 4, frontVehicleIds: [], backVehicleIds: [] },
+    { id: 4, colorValue: 9, capacity: 4, frontVehicleIds: [], backVehicleIds: [] }
+  ];
+  const passengers = passengersFor(vehicles);
+  const annotations = [
+    { ...core.createAnnotation(1), rightPreview: { mode: 'custom', count: 6 } },
+    { ...core.createAnnotation(2), rightPreview: { mode: 'custom', count: 4 } },
+    { ...core.createAnnotation(3), rightPreview: { mode: 'custom', count: 5 } },
+    { ...core.createAnnotation(4), rightPreview: { mode: 'custom', count: 6 } }
+  ];
+
+  const results = [[1, 2, 4, 3], [2, 4, 1, 3]].map(pathValue => core.compileConstraints({
+    conveyorCapacity: 4,
+    passengers,
+    vehicles,
+    path: pathValue,
+    annotations
+  }));
+
+  results.forEach(compiled => {
+    assert.deepEqual(json(constraintCodes(compiled)), ['preview_color_conflict']);
+    assert.deepEqual(json(compiled.rightPreview), [{
+      vehicleId: 3,
+      colorValue: 8,
+      count: 5,
+      vehicleIds: [3]
+    }]);
+    assert(!hasCode(compiled, 'preview_sum_exceeds_ten'));
+  });
 });
 
 test('checks preview sum at ten and above ten across different colors', () => {
@@ -322,7 +413,7 @@ test('passes through every base error and does not throw on malformed data', () 
   });
   assert.deepEqual(json(compiled.errors.slice(0, baseErrors.length)), json(baseErrors));
   assert.doesNotThrow(() => JSON.stringify(compiled));
-  assert.deepEqual(json(compiled.annotations).map(item => item.vehicleId), [1]);
+  assertEmptyDerivedConstraints(compiled);
 
   [null, undefined, 7, 'bad', {}, []].forEach(input => {
     assert.doesNotThrow(() => JSON.stringify(core.compileConstraints(input)));
@@ -367,7 +458,7 @@ test('rejects hostile conveyor capacities without adding secondary constraint er
   });
 });
 
-test('filters hostile path values out of annotations and step mappings', () => {
+test('short-circuits hostile paths without compressing annotations or step mappings', () => {
   const sparsePath = [1, , 2];
   const paths = [
     [1, Symbol('bad'), 2n, {}, 3],
@@ -392,12 +483,7 @@ test('filters hostile path values out of annotations and step mappings', () => {
     });
     assert.doesNotThrow(() => JSON.stringify(compiled));
     assert(compiled.errors.some(error => error.category === 'input_error'));
-    assert(compiled.annotations.every(annotation => Number.isSafeInteger(annotation.vehicleId)
-      && annotation.vehicleId >= 0));
-    assert(Reflect.ownKeys(compiled.stepById).every(key => typeof key === 'string'));
-    assert(Object.values(compiled.stepById).every(Number.isSafeInteger));
-    [compiled.pressureLinks, compiled.initialOccupy, compiled.laterOccupy, compiled.rightPreview]
-      .forEach(value => assert(Array.isArray(value)));
+    assertEmptyDerivedConstraints(compiled);
   });
 
   const filtered = core.compileConstraints({
@@ -407,8 +493,78 @@ test('filters hostile path values out of annotations and step mappings', () => {
     path: [1, Symbol('bad'), 3],
     annotations: []
   });
-  assert.deepEqual(json(filtered.annotations).map(annotation => annotation.vehicleId), [1, 3]);
-  assert.deepEqual(json(filtered.stepById), { 1: 1, 3: 2 });
+  assertEmptyDerivedConstraints(filtered);
+});
+
+test('short-circuits a repeated path before producing duplicate derived constraints', () => {
+  const input = makeAnnotatedInput({
+    1: {
+      settlementTarget: 'empty',
+      pressureSlot: true,
+      releaseTriggerVehicleId: 2,
+      initialOccupy: { mode: 'custom', count: 2, duration: 1 },
+      rightPreview: { mode: 'custom', count: 2 }
+    }
+  }, { path: [1, 1, 2] });
+  const compiled = core.compileConstraints(input);
+
+  assert(compiled.errors.length > 0);
+  assert(compiled.errors.every(error => error.category === 'input_error'));
+  assertEmptyDerivedConstraints(compiled);
+  assert.doesNotThrow(() => JSON.stringify(compiled));
+});
+
+test('rejects huge sparse arrays quickly and does not read a proxy length getter', () => {
+  const childScript = String.raw`
+    const fs = require('node:fs');
+    const vm = require('node:vm');
+    const context = vm.createContext({ window: {} });
+    vm.runInContext(fs.readFileSync('pressure-queue-core.js', 'utf8'), context);
+    const core = context.window.PressureQueueCore;
+    const huge = () => {
+      const value = [];
+      value.length = 0xffffffff;
+      return value;
+    };
+    const compile = input => JSON.stringify(core.compileConstraints(input));
+    compile({ conveyorCapacity: 4, passengers: [], vehicles: [], path: huge(), annotations: [] });
+    compile({ conveyorCapacity: 4, passengers: huge(), vehicles: [], path: [], annotations: [] });
+    compile({ conveyorCapacity: 4, passengers: [], vehicles: huge(), path: [], annotations: [] });
+    compile({
+      conveyorCapacity: 1,
+      passengers: new Array(11).fill(1),
+      vehicles: [{ id: 0, colorValue: 1, capacity: 11, frontVehicleIds: [], backVehicleIds: [] }],
+      path: [0],
+      annotations: huge()
+    });
+  `;
+  const child = spawnSync(process.execPath, ['-e', childScript], {
+    cwd: path.join(__dirname, '..'),
+    encoding: 'utf8',
+    timeout: 1500
+  });
+  assert.equal(child.status, 0, child.error ? child.error.message : child.stderr);
+
+  let lengthGetterCalls = 0;
+  const pathProxy = new Proxy([1], {
+    get(target, key, receiver) {
+      if (key === 'length') {
+        lengthGetterCalls += 1;
+        throw new Error('unsafe length getter executed');
+      }
+      return Reflect.get(target, key, receiver);
+    }
+  });
+  const compiled = core.compileConstraints({
+    conveyorCapacity: 4,
+    passengers: [],
+    vehicles: [],
+    path: pathProxy,
+    annotations: []
+  });
+  assert.equal(lengthGetterCalls, 0);
+  assert.doesNotThrow(() => JSON.stringify(compiled));
+  assertEmptyDerivedConstraints(compiled);
 });
 
 test('does not execute top-level accessors and tolerates malformed annotation and vehicle fields', () => {
