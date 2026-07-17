@@ -3403,6 +3403,60 @@
           });
         });
 
+        test('加载规范真实 success 只执行一次编译和严格验证', () => {
+          const genuineState = makeGenuinePressureState('加载单次严格验证');
+          const originalPressureCore = appWindow.PressureQueueCore;
+          let compileCalls = 0;
+          let verifyCalls = 0;
+          let normalized;
+          appWindow.PressureQueueCore = Object.freeze({
+            ...originalPressureCore,
+            compileConstraints(...args) {
+              compileCalls += 1;
+              return Reflect.apply(originalPressureCore.compileConstraints, originalPressureCore, args);
+            },
+            verify(...args) {
+              verifyCalls += 1;
+              return Reflect.apply(originalPressureCore.verify, originalPressureCore, args);
+            }
+          });
+          try {
+            normalized = core.normalizeLoadedStateForTest(genuineState);
+          } finally {
+            appWindow.PressureQueueCore = originalPressureCore;
+          }
+
+          equal(normalized.pressureQueue.result.status, 'success', '单次验证计数测试丢失真实 success');
+          equal({ compileCalls, verifyCalls }, { compileCalls: 1, verifyCalls: 1 }, '加载真实 success 重复执行了编译或严格验证');
+        });
+
+        test('保存规范真实 success 只执行一次编译和严格验证', () => {
+          const genuineState = makeGenuinePressureState('保存单次严格验证');
+          const originalPressureCore = appWindow.PressureQueueCore;
+          let compileCalls = 0;
+          let verifyCalls = 0;
+          let saved = false;
+          appWindow.PressureQueueCore = Object.freeze({
+            ...originalPressureCore,
+            compileConstraints(...args) {
+              compileCalls += 1;
+              return Reflect.apply(originalPressureCore.compileConstraints, originalPressureCore, args);
+            },
+            verify(...args) {
+              verifyCalls += 1;
+              return Reflect.apply(originalPressureCore.verify, originalPressureCore, args);
+            }
+          });
+          try {
+            saved = withStoredState(null, () => core.saveState(genuineState));
+          } finally {
+            appWindow.PressureQueueCore = originalPressureCore;
+          }
+
+          assert(saved, '单次验证计数测试未保存真实 success');
+          equal({ compileCalls, verifyCalls }, { compileCalls: 1, verifyCalls: 1 }, '保存真实 success 重复执行了编译或严格验证');
+        });
+
         test('压力队列结果拒绝带 status 的数组以避免 JSON 往返丢失', () => {
           const arrayResult = [];
           arrayResult.status = 'success';

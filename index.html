@@ -5635,7 +5635,10 @@
           ? canonicalResult.value
           : null;
       }
-      return isValidState(candidateWithCurrentData) ? candidateWithCurrentData : createInitialState();
+      return isValidState(
+        candidateWithCurrentData,
+        candidateWithCurrentData.pressureQueue.result
+      ) ? candidateWithCurrentData : createInitialState();
     }
 
     function normalizeLoadedStateForTest(candidate) {
