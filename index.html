@@ -1147,6 +1147,428 @@
       border-color: var(--danger);
     }
 
+    #pressureQueueResultHost,
+    .pressure-result-sheet,
+    .pressure-result-section {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    #pressureQueueResultHost:empty {
+      display: none;
+    }
+
+    .pressure-result-sheet {
+      position: relative;
+      padding: 0;
+      overflow: hidden;
+      background-color: #f8f5e9;
+      background-image:
+        linear-gradient(rgba(30, 43, 48, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(30, 43, 48, 0.055) 1px, transparent 1px);
+      background-size: 18px 18px;
+      border: 2px solid var(--rail);
+      box-shadow: 8px 8px 0 rgba(30, 43, 48, 0.15);
+    }
+
+    .pressure-result-sheet::before {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 7px;
+      content: "";
+      background: repeating-linear-gradient(90deg, var(--ok) 0 46px, var(--signal) 46px 60px, var(--rail) 60px 106px);
+    }
+
+    .pressure-result-sheet.is-failure::before {
+      background: repeating-linear-gradient(90deg, var(--danger) 0 46px, var(--signal) 46px 60px, var(--rail) 60px 106px);
+    }
+
+    .pressure-result-header {
+      display: flex;
+      gap: 24px;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 28px 26px 20px;
+      color: #eff4f1;
+      background: var(--rail);
+      border-bottom: 5px solid var(--signal);
+    }
+
+    .pressure-result-header h2 {
+      margin: 7px 0 0;
+      color: #fffdf7;
+      font-size: clamp(25px, 4vw, 40px);
+      letter-spacing: 0.04em;
+    }
+
+    .pressure-result-header p:not(.panel-label) {
+      margin: 8px 0 0;
+      color: #c4cfcc;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.55;
+    }
+
+    .pressure-result-stamp {
+      display: grid;
+      flex: none;
+      width: 112px;
+      min-height: 82px;
+      place-items: center;
+      padding: 9px;
+      color: #dceee5;
+      border: 3px double #70a88c;
+      transform: rotate(-2deg);
+      text-align: center;
+    }
+
+    .pressure-result-stamp strong {
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      font-size: 27px;
+      letter-spacing: 0.12em;
+      line-height: 1;
+    }
+
+    .pressure-result-stamp span {
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+    }
+
+    .pressure-result-stamp.is-failure {
+      color: #f4ddd9;
+      border-color: #d67b72;
+    }
+
+    .pressure-result-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      background: #fffdf7;
+      border-bottom: 1px solid #8e9a95;
+    }
+
+    .pressure-result-metrics > span {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+      padding: 13px 16px;
+      border-right: 1px solid #aeb7b2;
+    }
+
+    .pressure-result-metrics > span:last-child {
+      border-right: 0;
+    }
+
+    .pressure-result-metrics small {
+      color: var(--muted);
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+    }
+
+    .pressure-result-metrics strong {
+      overflow-wrap: anywhere;
+      font-size: 19px;
+    }
+
+    .pressure-result-section {
+      padding: 22px 24px;
+      border-bottom: 1px solid #9aa59f;
+    }
+
+    .pressure-section-heading {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 13px;
+    }
+
+    .pressure-section-heading > span {
+      display: grid;
+      flex: none;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      color: #fffdf7;
+      background: var(--rail);
+      border-bottom: 4px solid var(--signal);
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .pressure-section-heading h3 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0.04em;
+    }
+
+    .pressure-output-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .pressure-output-card {
+      min-width: 0;
+      padding: 13px;
+      background: rgba(255, 253, 247, 0.94);
+      border: 1px solid #87948f;
+      border-left: 5px solid var(--ok);
+      box-shadow: 0 3px 0 rgba(30, 43, 48, 0.1);
+    }
+
+    .pressure-output-card-heading {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+    }
+
+    .pressure-output-card-heading strong {
+      color: var(--ok);
+      white-space: nowrap;
+    }
+
+    .pressure-output-values {
+      margin: 10px 0 0;
+      overflow-wrap: anywhere;
+      color: var(--rail);
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.65;
+    }
+
+    .pressure-output-card small {
+      display: block;
+      margin-top: 7px;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .pressure-result-actions {
+      justify-content: flex-start;
+      margin-top: 14px;
+      padding-top: 13px;
+      border-top: 1px dashed #919c97;
+    }
+
+    .pressure-apply-feedback {
+      min-height: 20px;
+      margin: 9px 0 0;
+      color: #17553e;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .pressure-apply-feedback:empty {
+      display: none;
+    }
+
+    .pressure-table-scroll {
+      width: 100%;
+      max-width: 100%;
+      overflow: auto;
+      background: rgba(255, 253, 247, 0.94);
+      border: 1px solid #7f8d87;
+      overscroll-behavior-inline: contain;
+    }
+
+    .pressure-table-scroll:focus-visible {
+      outline: 3px solid var(--signal);
+      outline-offset: 2px;
+    }
+
+    .pressure-table-scroll table {
+      width: max(100%, 760px);
+      border-collapse: collapse;
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .pressure-table-scroll th,
+    .pressure-table-scroll td {
+      padding: 9px 10px;
+      border-right: 1px solid #c4cac5;
+      border-bottom: 1px solid #c4cac5;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .pressure-table-scroll thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      color: #fffdf7;
+      background: var(--rail);
+      border-color: #52615f;
+      font-size: 10px;
+      letter-spacing: 0.05em;
+      white-space: nowrap;
+    }
+
+    .pressure-table-scroll tbody th {
+      color: var(--rail);
+      background: #eee9d9;
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      white-space: nowrap;
+    }
+
+    .pressure-table-scroll tbody tr:nth-child(even) td {
+      background: rgba(226, 230, 220, 0.48);
+    }
+
+    .pressure-slot-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 34px);
+      gap: 5px;
+    }
+
+    .pressure-slot-cell {
+      display: grid;
+      width: 34px;
+      height: 29px;
+      place-items: center;
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      font-size: 9px;
+      font-weight: 900;
+      border: 1px solid #6e7c77;
+    }
+
+    .pressure-slot-cell.is-occupied {
+      color: #fffdf7;
+      background: var(--rail-soft);
+      box-shadow: inset 0 -4px 0 var(--signal);
+    }
+
+    .pressure-slot-cell.is-free {
+      color: #286449;
+      background: #dcebe3;
+      border-style: dashed;
+    }
+
+    .pressure-proof-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+      border-bottom: 1px solid #9aa59f;
+    }
+
+    .pressure-proof-grid .pressure-result-section {
+      border-right: 1px solid #9aa59f;
+      border-bottom: 0;
+    }
+
+    .pressure-proof-grid .pressure-result-section:last-child {
+      border-right: 0;
+    }
+
+    .pressure-proof-note {
+      margin: 0 0 11px;
+      padding: 9px 11px;
+      color: #493709;
+      background: #f5e6b6;
+      border-left: 4px solid var(--signal);
+      font-size: 12px;
+    }
+
+    .pressure-final-clear {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 5px 16px;
+      align-items: center;
+      padding: 18px 24px;
+      color: #e9f2ee;
+      background: var(--ok);
+      border-top: 5px solid var(--rail);
+    }
+
+    .pressure-final-clear > span {
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+    }
+
+    .pressure-final-clear > strong {
+      font-size: 21px;
+    }
+
+    .pressure-final-clear p {
+      grid-column: 1 / -1;
+      margin: 0;
+      font-size: 11px;
+      font-weight: 750;
+    }
+
+    .pressure-failure-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .pressure-failure-list li {
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr);
+      gap: 10px;
+      padding: 10px;
+      background: #f8e5e1;
+      border-left: 5px solid var(--danger);
+    }
+
+    .pressure-failure-list li > span {
+      display: grid;
+      height: 30px;
+      place-items: center;
+      color: #fffdf7;
+      background: var(--danger);
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      font-weight: 900;
+    }
+
+    .pressure-failure-list strong {
+      color: #6e211b;
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      font-size: 10px;
+    }
+
+    .pressure-failure-list p {
+      margin: 4px 0 0;
+      overflow-wrap: anywhere;
+      color: #482a27;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .pressure-budget-note {
+      margin: 0;
+      padding: 16px 24px;
+      color: #493709;
+      background: #f5e6b6;
+      border-top: 1px solid #b99636;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
     @media (prefers-reduced-motion: reduce) {
       .pressure-vehicle-card {
         transition: none;
@@ -1171,6 +1593,15 @@
         padding-bottom: 12px;
         border-right: 0;
         border-bottom: 1px dashed #aeb7b2;
+      }
+
+      .pressure-proof-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .pressure-proof-grid .pressure-result-section {
+        border-right: 0;
+        border-bottom: 1px solid #9aa59f;
       }
     }
 
@@ -1216,6 +1647,46 @@
 
       .pressure-panel-note {
         text-align: left;
+      }
+
+      .pressure-result-header {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .pressure-result-stamp {
+        width: 100%;
+        min-height: 58px;
+        transform: none;
+      }
+
+      .pressure-result-metrics,
+      .pressure-output-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .pressure-result-metrics > span {
+        border-right: 0;
+        border-bottom: 1px solid #aeb7b2;
+      }
+
+      .pressure-result-actions .action-button {
+        flex: 1 1 100%;
+      }
+
+      .pressure-result-section,
+      .pressure-result-header,
+      .pressure-final-clear {
+        padding-right: 14px;
+        padding-left: 14px;
+      }
+
+      .pressure-final-clear {
+        grid-template-columns: 1fr;
+      }
+
+      .pressure-final-clear p {
+        grid-column: auto;
       }
     }
 
@@ -5425,7 +5896,13 @@
           return { valid: false, value: null };
         }
         canonical.verification = canonicalVerification;
-        return { valid: true, value: canonical };
+        return {
+          valid: true,
+          value: canonical,
+          model: parsed.model,
+          compiled,
+          verification: canonicalVerification
+        };
       } catch {
         return { valid: false, value: null };
       }
@@ -5524,6 +6001,345 @@
         && isValidPathSolve(candidate.pathSolve)
         && isValidPressureQueue(pressureQueueProperty.value, candidate, canonicalResult)
         && STAGES.includes(candidate.activeStage);
+    }
+
+    function getDefensivePressureQueueSnapshot(currentState) {
+      const snapshot = cloneJsonSafeValueWithoutAccessors(currentState);
+      if (snapshot === INVALID_PRESSURE_QUEUE_RESULT
+        || !snapshot
+        || typeof snapshot !== 'object'
+        || Array.isArray(snapshot)) {
+        return null;
+      }
+      const pressureProperty = getOwnEnumerableDataValue(snapshot, 'pressureQueue');
+      const resultProperty = pressureProperty.valid
+        ? getOwnEnumerableDataValue(pressureProperty.value, 'result')
+        : { valid: false, value: null };
+      if (!pressureProperty.valid || !resultProperty.valid) return null;
+      try {
+        return isValidState(snapshot, resultProperty.value)
+          ? { snapshot, pressureQueue: pressureProperty.value, rawResult: resultProperty.value }
+          : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function inspectPressureQueueResult(currentState) {
+      const safe = getDefensivePressureQueueSnapshot(currentState);
+      if (!safe) return null;
+      const canonical = canonicalizePressureQueueResult(safe.rawResult, safe.snapshot);
+      return {
+        ...safe,
+        valid: canonical.valid,
+        result: canonical.valid ? canonical.value : null,
+        model: canonical.model || null,
+        compiled: canonical.compiled || null,
+        verification: canonical.verification || null,
+        genuineSuccess: Boolean(canonical.valid
+          && canonical.value
+          && canonical.value.status === 'success'
+          && canonical.verification
+          && Array.isArray(canonical.verification.errors)
+          && canonical.verification.errors.length === 0)
+      };
+    }
+
+    function applyPressureQueueResult(currentState) {
+      const inspected = inspectPressureQueueResult(currentState);
+      if (!inspected || !inspected.genuineSuccess) return currentState;
+      const layout = inspected.result.layout;
+      return {
+        ...currentState,
+        queues: {
+          conveyor: [...layout.belt],
+          left: [...layout.left],
+          right: [...layout.right]
+        },
+        histories: createEmptySections()
+      };
+    }
+
+    function getPressureQueueLevelName(currentState) {
+      const pressureProperty = getOwnDataValue(currentState, 'pressureQueue');
+      if (!pressureProperty.present) return '';
+      const levelProperty = getOwnDataValue(pressureProperty.value, 'levelName');
+      return levelProperty.present && typeof levelProperty.value === 'string'
+        ? levelProperty.value
+        : '';
+    }
+
+    function getPressureQueueMarkdownFilename(currentState) {
+      try {
+        let levelName = getPressureQueueLevelName(currentState)
+          .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]+/g, '_')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .replace(/[. ]+$/g, '')
+          .replace(/^[. ]+/g, '');
+        if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(levelName)) {
+          levelName = `_${levelName}`;
+        }
+        if (!levelName || levelName === '.' || levelName === '..') levelName = '未命名关卡';
+        levelName = levelName.slice(0, 96).trim().replace(/[. ]+$/g, '') || '未命名关卡';
+        return `${levelName}-压力队列生成报告.md`;
+      } catch {
+        return '未命名关卡-压力队列生成报告.md';
+      }
+    }
+
+    function flattenPressureMarkdownText(value) {
+      if (typeof value !== 'string' && typeof value !== 'number') return '';
+      return String(value)
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replaceAll('\\', '\\\\')
+        .replaceAll('|', '\\|')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+    }
+
+    function formatPressureQueueValues(values) {
+      return Array.isArray(values) && values.length > 0 ? values.join(',') : '空队列';
+    }
+
+    function countPressureValues(values) {
+      const counts = new Map();
+      if (Array.isArray(values)) {
+        values.forEach(value => counts.set(value, (counts.get(value) || 0) + 1));
+      }
+      return counts;
+    }
+
+    function formatPressureCounts(values) {
+      const entries = [...countPressureValues(values).entries()]
+        .sort((left, right) => left[0] - right[0]);
+      return entries.length > 0
+        ? entries.map(([value, count]) => `${value}×${count}`).join('、')
+        : '无';
+    }
+
+    function getPressureReportColorLabel(snapshot, colorValue) {
+      const color = snapshot.colors.find(item => item.value === colorValue);
+      const name = color ? flattenPressureMarkdownText(color.name) : '未知颜色';
+      return `${name || '未知颜色'} (${colorValue})`;
+    }
+
+    function formatPressureStrengthForReport(label, strength) {
+      if (!strength) return '';
+      const modeLabels = { low: '低', medium: '中', high: '高', custom: '自定义' };
+      const details = [modeLabels[strength.mode] || strength.mode];
+      if (Number.isSafeInteger(strength.count)) details.push(`${strength.count} 人`);
+      if (Number.isSafeInteger(strength.duration)) details.push(`${strength.duration} 步`);
+      return `${label} ${details.join(' / ')}`;
+    }
+
+    function formatPressureSlotForReport(slot) {
+      return slot && typeof slot === 'object'
+        ? `#${slot.vehicleId} / 颜色 ${slot.colorValue} / 剩余 ${slot.remaining}`
+        : '空闲';
+    }
+
+    function getPressureQueueReportText(currentState) {
+      try {
+        const inspected = inspectPressureQueueResult(currentState);
+        const safeLevel = flattenPressureMarkdownText(
+          inspected ? inspected.pressureQueue.levelName : getPressureQueueLevelName(currentState)
+        ) || '未命名关卡';
+        const lines = [`# 压力队列生成报告｜${safeLevel}`, '', '## 结果概览', ''];
+        const statusLabels = {
+          success: '生成成功',
+          input_error: '输入错误',
+          constraint_conflict: '约束冲突',
+          budget_exhausted: '预算耗尽'
+        };
+        const result = inspected && inspected.valid ? inspected.result : null;
+
+        if (!result || !inspected) {
+          lines.push('状态：无有效结果', '', '当前状态中没有可验证的压力队列终态。');
+          return lines.join('\n');
+        }
+
+        if (!inspected.genuineSuccess) {
+          const label = statusLabels[result.status] || '结果已失效';
+          lines.push(
+            `状态：${label}`,
+            `展开：${Number.isSafeInteger(result.expanded) ? result.expanded : 0}`,
+            `预算：${Number.isSafeInteger(result.budget) ? result.budget : 0}`,
+            '',
+            '## 结构化消息',
+            '',
+            '| 类别 | 代码 | 消息 |',
+            '| --- | --- | --- |'
+          );
+          const issues = Array.isArray(result.errors) ? result.errors : [];
+          if (issues.length === 0) {
+            lines.push('| — | — | 未提供结构化原因 |');
+          } else {
+            issues.forEach(issue => {
+              lines.push(`| ${flattenPressureMarkdownText(issue.category) || '—'} | ${flattenPressureMarkdownText(issue.code) || '—'} | ${flattenPressureMarkdownText(issue.message) || '—'} |`);
+            });
+          }
+          if (result.status === 'budget_exhausted') {
+            lines.push('', '> 搜索预算已耗尽，未证明绝对无解。请提高搜索预算后重试。');
+          }
+          return lines.join('\n');
+        }
+
+        const { snapshot, model, compiled, verification } = inspected;
+        const layout = result.layout;
+        const merged = [...layout.belt, ...layout.left, ...layout.right];
+        lines.push(
+          '状态：生成成功',
+          `搜索展开：${result.expanded}`,
+          `搜索预算：${result.budget}`,
+          '',
+          '## 适用队列',
+          '',
+          `- 传送带：${formatPressureQueueValues(layout.belt)}`,
+          `- 左侧队列：${formatPressureQueueValues(layout.left)}`,
+          `- 右侧队列：${formatPressureQueueValues(layout.right)}`,
+          `- 合并队列：${formatPressureQueueValues(merged)}`,
+          `- 左侧长度：${layout.left.length}`,
+          '',
+          '## 乘客与颜色总量守恒',
+          '',
+          `输入总量：${model.passengers.length}；布局总量：${merged.length}；守恒：${model.passengers.length === merged.length ? '是' : '否'}`,
+          '',
+          '| 颜色 | 输入总量 | 布局总量 | 守恒 |',
+          '| --- | ---: | ---: | --- |'
+        );
+        const inputCounts = countPressureValues(model.passengers);
+        const layoutCounts = countPressureValues(merged);
+        [...new Set([...inputCounts.keys(), ...layoutCounts.keys()])]
+          .sort((left, right) => left - right)
+          .forEach(value => {
+            const inputCount = inputCounts.get(value) || 0;
+            const layoutCount = layoutCounts.get(value) || 0;
+            lines.push(`| 颜色 ${value}｜${getPressureReportColorLabel(snapshot, value)} | ${inputCount} | ${layoutCount} | ${inputCount === layoutCount ? '通过' : '不一致'} |`);
+          });
+
+        const vehiclesById = new Map(model.vehicles.map(vehicle => [vehicle.id, vehicle]));
+        lines.push(
+          '',
+          '## 车辆角色与标注',
+          '',
+          '| 步骤 | 车辆 ID | 颜色 | 结算 | 压力 / 触发 | 解锁 | 占带 / 预告 |',
+          '| ---: | ---: | --- | --- | --- | --- | --- |'
+        );
+        const settlementLabels = { normal: '正常', instant: '即时', empty: '空车', partial: '部分' };
+        model.path.forEach((vehicleId, index) => {
+          const vehicle = vehiclesById.get(vehicleId);
+          const annotation = model.annotations[index];
+          const settlement = annotation.settlementTarget === 'partial'
+            ? `部分（剩余 ${annotation.remainingSeats}）`
+            : settlementLabels[annotation.settlementTarget] || annotation.settlementTarget;
+          const pressure = annotation.pressureSlot
+            ? `压力车；触发 #${annotation.releaseTriggerVehicleId}`
+            : '普通';
+          const tags = [
+            formatPressureStrengthForReport('初始占带', annotation.initialOccupy),
+            formatPressureStrengthForReport('后段占带', annotation.laterOccupy),
+            formatPressureStrengthForReport('右侧预告', annotation.rightPreview)
+          ].filter(Boolean);
+          lines.push(`| ${index + 1} | #${vehicleId} | ${getPressureReportColorLabel(snapshot, vehicle.colorValue)} | ${settlement} | ${pressure} | ${annotation.pathUnlock ? '路径解锁' : '—'} | ${tags.length ? tags.join('；') : '—'} |`);
+        });
+
+        lines.push(
+          '',
+          '## 车位压力曲线',
+          '',
+          '| 步骤 | 点击车辆 | 已占车位 | 空闲车位 | 离开车辆 |',
+          '| ---: | ---: | ---: | ---: | --- |'
+        );
+        verification.trace.steps.forEach((step, index) => {
+          const curve = verification.pressureCurve[index] || {};
+          lines.push(`| ${step.step} | #${step.clickedVehicleId} | ${curve.occupiedSlots} | ${curve.freeSlots} | ${step.departedVehicleIds.length ? step.departedVehicleIds.map(id => `#${id}`).join('、') : '无'} |`);
+        });
+
+        lines.push(
+          '',
+          '## 详细稳定步骤',
+          '',
+          '| 步骤 | 点击车辆 | 步前空位 | 步后空位 | 车位 1 | 车位 2 | 车位 3 | 车位 4 | 车辆消耗 | 传送带组成 | 传送带计数 | 左侧剩余 | 右侧剩余 |',
+          '| ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | ---: |'
+        );
+        verification.trace.steps.forEach(step => {
+          const consumption = Object.keys(step.consumption)
+            .sort((left, right) => Number(left) - Number(right))
+            .map(value => `${value}×${step.consumption[value]}`)
+            .join('、') || '无';
+          const slots = Array.from({ length: 4 }, (_, index) => formatPressureSlotForReport(step.slots[index]));
+          lines.push(`| ${step.step} | #${step.clickedVehicleId} | ${step.freeSlotsBefore} | ${step.freeSlotsAfter} | ${slots.join(' | ')} | ${consumption} | ${formatPressureQueueValues(step.belt)} | ${formatPressureCounts(step.belt)} | ${step.leftRemaining} | ${step.rightRemaining} |`);
+        });
+
+        lines.push(
+          '',
+          '## 压力释放证明',
+          '',
+          '| 压力车辆 | 触发车辆 | 触发步骤 | 实际离开步骤 |',
+          '| ---: | ---: | ---: | ---: |'
+        );
+        if (verification.pressureProof.length === 0) {
+          lines.push('| — | — | — | 无压力释放标注 |');
+        } else {
+          verification.pressureProof.forEach(proof => {
+            lines.push(`| #${proof.vehicleId} | #${proof.triggerVehicleId} | ${proof.triggerStep} | ${proof.departureStep} |`);
+          });
+        }
+
+        lines.push(
+          '',
+          '## 占带窗口证明',
+          '',
+          '| 类型 | 车辆 / 颜色 | 人数 | 持续 | 开始 | 结束 | 实际初始 |',
+          '| --- | --- | ---: | ---: | ---: | ---: | ---: |'
+        );
+        if (verification.occupyProof.length === 0) {
+          lines.push('| — | — | — | — | — | — | 无占带标注 |');
+        } else {
+          verification.occupyProof.forEach(proof => {
+            lines.push(`| ${proof.type === 'initial' ? '初始占带' : '后段占带'} | #${proof.vehicleId} / 颜色 ${proof.colorValue} | ${proof.count} | ${proof.duration} 步 | ${proof.startStep === null ? '未形成' : proof.startStep} | ${proof.endStep === null ? '未形成' : proof.endStep} | ${Number.isSafeInteger(proof.initialCount) ? proof.initialCount : '—'} |`);
+          });
+        }
+
+        const firstTen = layout.right.slice(0, 10);
+        const firstTenCounts = countPressureValues(firstTen);
+        lines.push(
+          '',
+          '## 右侧预告证明',
+          '',
+          `前 10 人实际组成：${formatPressureCounts(firstTen)}`,
+          '',
+          '| 车辆 | 颜色 | 要求 | 实际 | 结论 |',
+          '| ---: | ---: | ---: | ---: | --- |'
+        );
+        if (!compiled.rightPreview.length) {
+          lines.push('| — | — | — | — | 无右侧预告标注 |');
+        } else {
+          compiled.rightPreview.forEach(preview => {
+            const actual = firstTenCounts.get(preview.colorValue) || 0;
+            lines.push(`| #${preview.vehicleId} | 颜色 ${preview.colorValue} | 要求 ${preview.count} | 实际 ${actual} | ${actual === preview.count ? '通过' : '不一致'} |`);
+          });
+        }
+
+        const finalSlotsClear = verification.trace.finalSlots.every(slot => slot === null);
+        lines.push(
+          '',
+          '## 最终清空摘要',
+          '',
+          `- 剩余车辆：${verification.trace.remainingVehicleIds.length}`,
+          `- 最终传送带：${verification.trace.finalBelt.length}`,
+          `- 最终左侧：${verification.trace.finalLeft.length}`,
+          `- 最终右侧：${verification.trace.finalRight.length}`,
+          `- 最终车位：${finalSlotsClear ? '全部空闲' : '未清空'}`,
+          `- 严格结论：${verification.errors.length === 0 ? '全部通过' : '未通过'}`
+        );
+        return lines.join('\n');
+      } catch {
+        return '# 压力队列生成报告｜未命名关卡\n\n## 结果概览\n\n状态：无有效结果';
+      }
     }
 
     function normalizeSimulationForCurrentVersion(simulation) {
@@ -5705,6 +6521,9 @@
       getConfigs,
       parseScriptVehicleTable,
       parsePressureQueueModel,
+      applyPressureQueueResult,
+      getPressureQueueMarkdownFilename,
+      getPressureQueueReportText,
       preparePressureQueueAnnotations,
       setPressureQueueInput,
       setPressureQueueAnnotation,
@@ -7080,6 +7899,297 @@
       if (cancelButton instanceof HTMLButtonElement) cancelButton.disabled = !running;
     }
 
+    function renderPressureTable(label, tableName, header, body) {
+      return `
+        <div class="pressure-table-scroll" tabindex="0" role="region" aria-label="${escapePressureHtml(label)}">
+          <table data-pressure-table="${tableName}">
+            ${header}
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderPressureQueueOutputCard(section, label, values, extra = '') {
+      const queueText = values.length > 0 ? values.join(',') : '空队列';
+      return `
+        <article class="pressure-output-card" data-pressure-queue="${section}">
+          <div class="pressure-output-card-heading">
+            <span>${escapePressureHtml(label)}</span>
+            <strong>${values.length} 人</strong>
+          </div>
+          <p class="pressure-output-values">${escapePressureHtml(queueText)}</p>
+          ${extra ? `<small>${escapePressureHtml(extra)}</small>` : ''}
+        </article>
+      `;
+    }
+
+    function getPressureUiColor(snapshot, colorValue) {
+      const color = snapshot.colors.find(item => item.value === colorValue);
+      return color ? `${color.name} (${colorValue})` : `未知颜色 (${colorValue})`;
+    }
+
+    function renderPressureSuccessResult(inspected) {
+      const { snapshot, model, compiled, verification, result } = inspected;
+      const layout = result.layout;
+      const merged = [...layout.belt, ...layout.left, ...layout.right];
+      const vehiclesById = new Map(model.vehicles.map(vehicle => [vehicle.id, vehicle]));
+      const settlementLabels = { normal: '正常', instant: '即时', empty: '空车', partial: '部分' };
+      const roleRows = model.path.map((vehicleId, index) => {
+        const vehicle = vehiclesById.get(vehicleId);
+        const annotation = model.annotations[index];
+        const settlement = annotation.settlementTarget === 'partial'
+          ? `部分 / 剩余 ${annotation.remainingSeats}`
+          : settlementLabels[annotation.settlementTarget] || annotation.settlementTarget;
+        const pressure = annotation.pressureSlot
+          ? `压力车 / 触发 #${annotation.releaseTriggerVehicleId}`
+          : '普通';
+        const tags = [
+          formatPressureStrengthForReport('初始占带', annotation.initialOccupy),
+          formatPressureStrengthForReport('后段占带', annotation.laterOccupy),
+          formatPressureStrengthForReport('右侧预告', annotation.rightPreview)
+        ].filter(Boolean).join('；') || '—';
+        return `
+          <tr>
+            <th scope="row">${index + 1}</th>
+            <td>#${vehicleId}</td>
+            <td>${escapePressureHtml(getPressureUiColor(snapshot, vehicle.colorValue))}</td>
+            <td>${escapePressureHtml(settlement)}</td>
+            <td>${escapePressureHtml(pressure)}</td>
+            <td>${annotation.pathUnlock ? '路径解锁' : '—'}</td>
+            <td>${escapePressureHtml(tags)}</td>
+          </tr>
+        `;
+      }).join('');
+
+      const curveRows = verification.trace.steps.map((step, index) => {
+        const curve = verification.pressureCurve[index] || { occupiedSlots: 0, freeSlots: 4 };
+        const slotCells = Array.from({ length: 4 }, (_, slotIndex) => {
+          const slot = step.slots[slotIndex];
+          const label = slot
+            ? `车位 ${slotIndex + 1}：车辆 #${slot.vehicleId}，剩余 ${slot.remaining}`
+            : `车位 ${slotIndex + 1}：空闲`;
+          return `<span class="pressure-slot-cell ${slot ? 'is-occupied' : 'is-free'}" title="${escapePressureHtml(label)}"><span aria-hidden="true">${slot ? `#${slot.vehicleId}` : '空'}</span><span class="sr-only">${escapePressureHtml(label)}</span></span>`;
+        }).join('');
+        const departed = step.departedVehicleIds.length
+          ? step.departedVehicleIds.map(id => `#${id}`).join('、')
+          : '无离开';
+        return `
+          <tr class="pressure-curve-row">
+            <th scope="row">${step.step}</th>
+            <td>点击 #${step.clickedVehicleId}</td>
+            <td><div class="pressure-slot-strip" aria-label="第 ${step.step} 步四个车位">${slotCells}</div></td>
+            <td>已占 ${curve.occupiedSlots} / 空闲 ${curve.freeSlots}</td>
+            <td>${escapePressureHtml(departed)}</td>
+          </tr>
+        `;
+      }).join('');
+
+      const traceRows = verification.trace.steps.map(step => {
+        const consumption = Object.keys(step.consumption)
+          .sort((left, right) => Number(left) - Number(right))
+          .map(value => `${value}×${step.consumption[value]}`)
+          .join('、') || '无';
+        const slots = Array.from({ length: 4 }, (_, index) => formatPressureSlotForReport(step.slots[index]));
+        return `
+          <tr>
+            <th scope="row">${step.step}</th>
+            <td>#${step.clickedVehicleId}</td>
+            <td>${step.freeSlotsBefore}</td>
+            <td>${step.freeSlotsAfter}</td>
+            ${slots.map(slot => `<td>${escapePressureHtml(slot)}</td>`).join('')}
+            <td>${escapePressureHtml(consumption)}</td>
+            <td>${escapePressureHtml(formatPressureQueueValues(step.belt))}</td>
+            <td>${escapePressureHtml(formatPressureCounts(step.belt))}</td>
+            <td>${step.leftRemaining}</td>
+            <td>${step.rightRemaining}</td>
+          </tr>
+        `;
+      }).join('');
+
+      const releaseRows = verification.pressureProof.length
+        ? verification.pressureProof.map(proof => `
+            <tr><th scope="row">#${proof.vehicleId}</th><td>#${proof.triggerVehicleId}</td><td>${proof.triggerStep}</td><td>${proof.departureStep}</td></tr>
+          `).join('')
+        : '<tr><td colspan="4">无压力释放标注，规范验证通过。</td></tr>';
+      const occupyRows = verification.occupyProof.length
+        ? verification.occupyProof.map(proof => `
+            <tr>
+              <th scope="row">${proof.type === 'initial' ? '初始占带' : '后段占带'}</th>
+              <td>#${proof.vehicleId} / 颜色 ${proof.colorValue}</td>
+              <td>${proof.count}</td>
+              <td>${proof.duration} 步</td>
+              <td>${proof.startStep === null ? '未形成' : proof.startStep}</td>
+              <td>${proof.endStep === null ? '未形成' : proof.endStep}</td>
+              <td>${Number.isSafeInteger(proof.initialCount) ? proof.initialCount : '—'}</td>
+            </tr>
+          `).join('')
+        : '<tr><td colspan="7">无占带窗口标注，规范验证通过。</td></tr>';
+      const firstTen = layout.right.slice(0, 10);
+      const firstTenCounts = countPressureValues(firstTen);
+      const previewRows = compiled.rightPreview.length
+        ? compiled.rightPreview.map(preview => {
+            const actual = firstTenCounts.get(preview.colorValue) || 0;
+            return `<tr><th scope="row">#${preview.vehicleId}</th><td>颜色 ${preview.colorValue}</td><td>${preview.count}</td><td>${actual}</td><td>${actual === preview.count ? '通过' : '不一致'}</td></tr>`;
+          }).join('')
+        : '<tr><td colspan="5">无右侧预告标注，前 10 人组成已留存。</td></tr>';
+      const finalSlotsClear = verification.trace.finalSlots.every(slot => slot === null);
+      const levelName = snapshot.pressureQueue.levelName.trim() || '未命名关卡';
+
+      return `
+        <section class="panel pressure-result-sheet is-success" data-pressure-result data-result-status="success" aria-labelledby="pressureResultTitle">
+          <header class="pressure-result-header">
+            <div>
+              <p class="panel-label">09 / VERIFIED ACCEPTANCE SHEET</p>
+              <h2 id="pressureResultTitle">压力队列验收单</h2>
+              <p>${escapePressureHtml(levelName)} · 独立严格验证通过</p>
+            </div>
+            <div class="pressure-result-stamp" aria-label="结果生成成功"><strong>PASS</strong><span>生成成功</span></div>
+          </header>
+
+          <div class="pressure-result-metrics" aria-label="搜索与守恒摘要">
+            <span><small>EXPANDED</small><strong>${result.expanded}</strong></span>
+            <span><small>BUDGET</small><strong>${result.budget}</strong></span>
+            <span><small>PASSENGERS</small><strong>${model.passengers.length}</strong></span>
+            <span><small>CONSERVATION</small><strong>${model.passengers.length === merged.length ? '通过' : '异常'}</strong></span>
+          </div>
+
+          <section class="pressure-result-section" aria-labelledby="pressureQueuesTitle">
+            <div class="pressure-section-heading"><span>01</span><h3 id="pressureQueuesTitle">可应用队列</h3></div>
+            <div class="pressure-output-grid">
+              ${renderPressureQueueOutputCard('belt', '传送带 / BELT', layout.belt)}
+              ${renderPressureQueueOutputCard('left', '左侧队列 / LEFT', layout.left, `自动左侧长度：${layout.left.length}`)}
+              ${renderPressureQueueOutputCard('right', '右侧队列 / RIGHT', layout.right)}
+              ${renderPressureQueueOutputCard('merged', '合并队列 / MERGED', merged)}
+            </div>
+            <div class="action-row pressure-result-actions" aria-label="压力队列结果操作">
+              <button class="action-button secondary" type="button" data-action="copy-pressure-belt">复制传送带</button>
+              <button class="action-button secondary" type="button" data-action="copy-pressure-left">复制左队列</button>
+              <button class="action-button secondary" type="button" data-action="copy-pressure-right">复制右队列</button>
+              <button class="action-button secondary" type="button" data-action="copy-pressure-all">复制整体配置</button>
+              <button class="action-button primary" type="button" data-action="apply-pressure-result">写回三个记录区</button>
+              <button class="action-button secondary" type="button" data-action="copy-pressure-report">复制验收报告</button>
+              <button class="action-button secondary" type="button" data-action="download-pressure-report">下载 Markdown</button>
+            </div>
+            <p class="pressure-apply-feedback" data-pressure-apply-feedback role="status" aria-live="polite"></p>
+          </section>
+
+          <section class="pressure-result-section" aria-labelledby="pressureRolesTitle">
+            <div class="pressure-section-heading"><span>02</span><h3 id="pressureRolesTitle">车辆角色与标注</h3></div>
+            ${renderPressureTable('车辆角色与标注表', 'roles', `
+              <thead><tr><th scope="col">步骤</th><th scope="col">车辆 ID</th><th scope="col">颜色</th><th scope="col">结算</th><th scope="col">压力 / 触发</th><th scope="col">解锁</th><th scope="col">占带 / 预告</th></tr></thead>
+            `, roleRows)}
+          </section>
+
+          <section class="pressure-result-section" aria-labelledby="pressureCurveTitle">
+            <div class="pressure-section-heading"><span>03</span><h3 id="pressureCurveTitle">车位压力曲线</h3></div>
+            ${renderPressureTable('四车位压力曲线', 'curve', `
+              <thead><tr><th scope="col">步骤</th><th scope="col">点击事件</th><th scope="col">四车位状态</th><th scope="col">已占 / 空闲</th><th scope="col">离开事件</th></tr></thead>
+            `, curveRows)}
+          </section>
+
+          <section class="pressure-result-section" aria-labelledby="pressureTraceTitle">
+            <div class="pressure-section-heading"><span>04</span><h3 id="pressureTraceTitle">详细稳定步骤</h3></div>
+            ${renderPressureTable('详细稳定步骤表', 'trace', `
+              <thead><tr><th scope="col">步骤</th><th scope="col">点击</th><th scope="col">步前空位</th><th scope="col">步后空位</th><th scope="col">车位 1</th><th scope="col">车位 2</th><th scope="col">车位 3</th><th scope="col">车位 4</th><th scope="col">车辆消耗</th><th scope="col">传送带</th><th scope="col">组成计数</th><th scope="col">左侧剩余</th><th scope="col">右侧剩余</th></tr></thead>
+            `, traceRows)}
+          </section>
+
+          <div class="pressure-proof-grid">
+            <section class="pressure-result-section" aria-labelledby="pressureReleaseTitle">
+              <div class="pressure-section-heading"><span>05</span><h3 id="pressureReleaseTitle">压力释放证明</h3></div>
+              ${renderPressureTable('压力释放证明表', 'release', '<thead><tr><th scope="col">压力车</th><th scope="col">触发车</th><th scope="col">触发步</th><th scope="col">实际离开步</th></tr></thead>', releaseRows)}
+            </section>
+            <section class="pressure-result-section" aria-labelledby="pressureOccupyTitle">
+              <div class="pressure-section-heading"><span>06</span><h3 id="pressureOccupyTitle">占带窗口证明</h3></div>
+              ${renderPressureTable('占带窗口证明表', 'occupy', '<thead><tr><th scope="col">类型</th><th scope="col">车辆 / 颜色</th><th scope="col">人数</th><th scope="col">持续</th><th scope="col">开始</th><th scope="col">结束</th><th scope="col">实际初始</th></tr></thead>', occupyRows)}
+            </section>
+          </div>
+
+          <section class="pressure-result-section" aria-labelledby="pressurePreviewTitle">
+            <div class="pressure-section-heading"><span>07</span><h3 id="pressurePreviewTitle">右侧预告证明</h3></div>
+            <p class="pressure-proof-note">前 10 人实际组成：<strong>${escapePressureHtml(formatPressureCounts(firstTen))}</strong></p>
+            ${renderPressureTable('右侧预告证明表', 'preview', '<thead><tr><th scope="col">车辆</th><th scope="col">颜色</th><th scope="col">要求</th><th scope="col">实际</th><th scope="col">结论</th></tr></thead>', previewRows)}
+          </section>
+
+          <footer class="pressure-final-clear">
+            <span>FINAL CLEAR / 最终清空</span>
+            <strong>${verification.trace.remainingVehicleIds.length === 0 && finalSlotsClear ? '全部通过' : '未通过'}</strong>
+            <p>剩余车辆 ${verification.trace.remainingVehicleIds.length} · 传送带 ${verification.trace.finalBelt.length} · 左队列 ${verification.trace.finalLeft.length} · 右队列 ${verification.trace.finalRight.length} · 车位${finalSlotsClear ? '全部空闲' : '未清空'}</p>
+          </footer>
+        </section>
+      `;
+    }
+
+    function renderPressureFailureResult(inspected) {
+      const result = inspected && inspected.valid ? inspected.result : null;
+      if (!result) {
+        return `
+          <section class="panel pressure-result-sheet is-failure" data-pressure-result data-result-status="invalid">
+            <p class="panel-label">RESULT REJECTED</p>
+            <h2>结果已失效</h2>
+            <p>已拒绝未知、畸形或无法与当前输入匹配的结果，不提供队列写回。</p>
+          </section>
+        `;
+      }
+      const labels = {
+        input_error: '输入错误',
+        constraint_conflict: '约束冲突',
+        budget_exhausted: '预算耗尽'
+      };
+      const label = labels[result.status] || '结果已失效';
+      const issueRows = result.errors.length
+        ? result.errors.map((issue, index) => `
+            <li><span>${String(index + 1).padStart(2, '0')}</span><div><strong>${escapePressureHtml(issue.code)}</strong><p>${escapePressureHtml(issue.message)}</p></div></li>
+          `).join('')
+        : '<li><span>01</span><div><strong>NO_DETAIL</strong><p>未提供结构化原因。</p></div></li>';
+      return `
+        <section class="panel pressure-result-sheet is-failure status-${result.status}" data-pressure-result data-result-status="${result.status}" aria-labelledby="pressureFailureTitle">
+          <header class="pressure-result-header">
+            <div>
+              <p class="panel-label">09 / EXCEPTION ACCEPTANCE SHEET</p>
+              <h2 id="pressureFailureTitle">${label}</h2>
+              <p>当前终态不可写回队列，以下为最后结构化原因。</p>
+            </div>
+            <div class="pressure-result-stamp is-failure"><strong>HOLD</strong><span>${label}</span></div>
+          </header>
+          <div class="pressure-result-metrics">
+            <span><small>EXPANDED</small><strong>${result.expanded}</strong></span>
+            <span><small>BUDGET</small><strong>${result.budget}</strong></span>
+            <span><small>STATUS</small><strong>${label}</strong></span>
+          </div>
+          <section class="pressure-result-section">
+            <div class="pressure-section-heading"><span>01</span><h3>最后原因</h3></div>
+            <ol class="pressure-failure-list">${issueRows}</ol>
+          </section>
+          ${result.status === 'budget_exhausted' ? `
+            <p class="pressure-budget-note"><strong>未证明绝对无解</strong>——本次搜索仅耗尽当前预算。请提高搜索预算后重试。</p>
+          ` : ''}
+        </section>
+      `;
+    }
+
+    function renderPressureQueueResult(inspected = inspectPressureQueueResult(state)) {
+      if (!inspected) return '';
+      if (inspected.rawResult === null) return '';
+      return inspected.genuineSuccess
+        ? renderPressureSuccessResult(inspected)
+        : renderPressureFailureResult(inspected);
+    }
+
+    function getPressureQueueResultSummary(inspected) {
+      if (!inspected || inspected.rawResult === null) return '';
+      if (!inspected.valid || !inspected.result) return '最近结果：已拒绝失效或畸形结果';
+      const labels = {
+        success: '生成成功',
+        input_error: '输入错误',
+        constraint_conflict: '约束冲突',
+        budget_exhausted: '预算耗尽'
+      };
+      const result = inspected.result;
+      return `最近结果：${labels[result.status] || '已拒绝'}；展开 ${Number.isSafeInteger(result.expanded) ? result.expanded : 0}；预算 ${Number.isSafeInteger(result.budget) ? result.budget : '—'}`;
+    }
+
     let pressureQueueBoardCache = null;
 
     function renderPressureQueueStage() {
@@ -7090,10 +8200,8 @@
           .map(vehicleId => renderPressureVehicleCardFromSnapshot(snapshot, vehicleId))
           .join('')
         : '';
-      const result = state.pressureQueue.result;
-      const resultSummary = result
-        ? `最近结果：${escapePressureHtml(result.status)}；展开 ${Number.isSafeInteger(result.expanded) ? result.expanded : 0}；预算 ${Number.isSafeInteger(result.budget) ? result.budget : '—'}`
-        : '';
+      const resultInspection = inspectPressureQueueResult(state);
+      const resultSummary = getPressureQueueResultSummary(resultInspection);
       const filters = [
         ['all', '全部'], ['pressure', '压力'], ['unlock', '解锁'], ['initial', '初始'],
         ['later', '后段'], ['preview', '预告'], ['conflicts', '冲突']
@@ -7160,6 +8268,8 @@
               <p class="pressure-result-summary" aria-live="polite">${resultSummary}</p>
             </div>
           </section>
+
+          <div id="pressureQueueResultHost">${renderPressureQueueResult(resultInspection)}</div>
 
           <section class="panel pressure-board" aria-labelledby="pressureBoardTitle">
             <div class="pressure-board-heading">
@@ -7282,6 +8392,7 @@
         return;
       }
       const snapshot = createPressureQueuePatchSnapshot();
+      const resultInspection = inspectPressureQueueResult(state);
       const errors = workspace.querySelector('#pressureQueueErrors');
       if (errors) {
         errors.innerHTML = snapshot.displayedErrors
@@ -7290,11 +8401,10 @@
       }
       const resultSummary = workspace.querySelector('.pressure-result-summary');
       if (resultSummary) {
-        const result = state.pressureQueue.result;
-        resultSummary.textContent = result
-          ? `最近结果：${result.status}；展开 ${Number.isSafeInteger(result.expanded) ? result.expanded : 0}；预算 ${Number.isSafeInteger(result.budget) ? result.budget : '—'}`
-          : '';
+        resultSummary.textContent = getPressureQueueResultSummary(resultInspection);
       }
+      const resultHost = workspace.querySelector('#pressureQueueResultHost');
+      if (resultHost) resultHost.innerHTML = renderPressureQueueResult(resultInspection);
       const boardCount = workspace.querySelector('.pressure-board-heading .empty-sequence');
       if (boardCount) {
         boardCount.textContent = snapshot.prepared
@@ -7457,6 +8567,8 @@
       }
       const resultSummary = workspace.querySelector('.pressure-result-summary');
       if (resultSummary) resultSummary.textContent = '';
+      const resultHost = workspace.querySelector('#pressureQueueResultHost');
+      if (resultHost) resultHost.replaceChildren();
       const boardCount = workspace.querySelector('.pressure-board-heading .empty-sequence');
       if (boardCount) boardCount.textContent = `${state.pressureQueue.annotations.length} 辆车 · 按路径排序`;
       updatePressureFilterControlsInPlace(snapshot);
@@ -8175,6 +9287,37 @@
         pathSolveRunToken += 1;
         pathSolveProgress = null;
         updateState(clearPathSolve(state));
+      } else if (target.matches('[data-action="copy-pressure-belt"], [data-action="copy-pressure-left"], [data-action="copy-pressure-right"], [data-action="copy-pressure-all"]')) {
+        const inspected = inspectPressureQueueResult(state);
+        if (!inspected || !inspected.genuineSuccess) return;
+        const layout = inspected.result.layout;
+        const valuesByAction = {
+          'copy-pressure-belt': layout.belt.join(','),
+          'copy-pressure-left': layout.left.join(','),
+          'copy-pressure-right': layout.right.join(','),
+          'copy-pressure-all': `${layout.belt.join(',')}|${layout.left.join(',')}|${layout.right.join(',')}`
+        };
+        void copyText(valuesByAction[target.dataset.action], target);
+      } else if (target.matches('[data-action="apply-pressure-result"]')) {
+        const applied = applyPressureQueueResult(state);
+        if (applied === state) return;
+        updateState(applied);
+        const feedback = workspace.querySelector('[data-pressure-apply-feedback]');
+        if (feedback) {
+          feedback.textContent = '已写回三个记录区，颜色映射保持不变。';
+        }
+      } else if (target.matches('[data-action="copy-pressure-report"]')) {
+        const inspected = inspectPressureQueueResult(state);
+        if (!inspected || !inspected.genuineSuccess) return;
+        void copyText(getPressureQueueReportText(state), target);
+      } else if (target.matches('[data-action="download-pressure-report"]')) {
+        const inspected = inspectPressureQueueResult(state);
+        if (!inspected || !inspected.genuineSuccess) return;
+        downloadTextFile(
+          getPressureQueueMarkdownFilename(state),
+          getPressureQueueReportText(state),
+          'text/markdown;charset=utf-8'
+        );
       } else if (target.matches('[data-action="prepare-pressure-annotations"]')) {
         cancelPressureQueueRun(false);
         updatePressureStateInPlace(preparePressureQueueAnnotations(setPressureQueueInput(state, getPressureQueueInputFromDom())));
@@ -8292,8 +9435,10 @@
       updateSaveFeedback(saveState(state));
       const errors = workspace.querySelector('#pressureQueueErrors');
       const summary = workspace.querySelector('.pressure-result-summary');
+      const resultHost = workspace.querySelector('#pressureQueueResultHost');
       if (errors) errors.replaceChildren();
       if (summary) summary.textContent = '';
+      if (resultHost) resultHost.replaceChildren();
       renderPressureQueueProgress();
     });
 
