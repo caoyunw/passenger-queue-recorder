@@ -1412,6 +1412,730 @@
     );
   }
 
+  function cloneVerifierIssue(value, source) {
+    const cloned = cloneJsonSafeDetail(value);
+    if (cloned === INVALID_JSON_DETAIL
+      || cloned === null
+      || Array.isArray(cloned)
+      || !isPlainJsonObject(cloned)) {
+      return createIssue(
+        'input_error',
+        `invalid_${source}_error`,
+        `${source} errors must contain ordinary JSON-safe issue objects`
+      );
+    }
+
+    const detail = {};
+    Object.keys(cloned).forEach(key => {
+      if (!FIXED_ISSUE_KEYS.has(key)) detail[key] = cloned[key];
+    });
+    return createIssue(cloned.category, cloned.code, cloned.message, detail);
+  }
+
+  function readVerifierIssues(owner, source) {
+    const property = readOwnDataValue(owner, 'errors');
+    const inspection = inspectDenseArrayEntries(property.value);
+    if (!property.present || !inspection.dense) {
+      return { valid: false, issues: [] };
+    }
+
+    let valid = true;
+    const issues = inspection.entries.map(entry => {
+      const issue = cloneVerifierIssue(entry.value, source);
+      if (issue.code === `invalid_${source}_error`) valid = false;
+      return issue;
+    });
+    return { valid, issues };
+  }
+
+  function verifierArray(value, predicate = () => true) {
+    const inspection = inspectDenseArrayEntries(value);
+    if (!inspection.dense) return { valid: false, values: [] };
+    const values = inspection.entries.map(entry => entry.value);
+    return {
+      valid: values.every((item, index) => predicate(item, index)),
+      values
+    };
+  }
+
+  function verifierArrayProperty(owner, key, predicate = () => true) {
+    const property = readOwnDataValue(owner, key);
+    if (!property.present) return { valid: false, values: [] };
+    return verifierArray(property.value, predicate);
+  }
+
+  function isVerifierSlot(value) {
+    if (value === null) return true;
+    if (!isPlainJsonObject(value)) return false;
+    const vehicleId = readOwnDataValue(value, 'vehicleId');
+    const colorValue = readOwnDataValue(value, 'colorValue');
+    const capacity = readOwnDataValue(value, 'capacity');
+    const remaining = readOwnDataValue(value, 'remaining');
+    return vehicleId.present
+      && isNonNegativeInteger(vehicleId.value)
+      && colorValue.present
+      && isNonNegativeInteger(colorValue.value)
+      && capacity.present
+      && isPositiveInteger(capacity.value)
+      && remaining.present
+      && isNonNegativeInteger(remaining.value)
+      && remaining.value <= capacity.value;
+  }
+
+  function readVerifierIntegerRecord(value, valuePredicate = isNonNegativeInteger) {
+    if (!isPlainJsonObject(value)) return { valid: false, values: new Map() };
+
+    let keys;
+    try {
+      keys = Reflect.ownKeys(value);
+    } catch {
+      return { valid: false, values: new Map() };
+    }
+
+    const values = new Map();
+    for (const key of keys) {
+      if (typeof key !== 'string') return { valid: false, values: new Map() };
+      const numericKey = Number(key);
+      if (!isNonNegativeInteger(numericKey) || String(numericKey) !== key) {
+        return { valid: false, values: new Map() };
+      }
+      const property = readOwnDataValue(value, key);
+      if (!property.present || !valuePredicate(property.value)) {
+        return { valid: false, values: new Map() };
+      }
+      values.set(numericKey, property.value);
+    }
+    return { valid: true, values };
+  }
+
+  function readVerifierAnnotation(value) {
+    if (!isPlainJsonObject(value)) return null;
+    const vehicleId = readOwnDataValue(value, 'vehicleId');
+    const settlementTarget = readOwnDataValue(value, 'settlementTarget');
+    const remainingSeats = readOwnDataValue(value, 'remainingSeats');
+    if (!vehicleId.present
+      || !isNonNegativeInteger(vehicleId.value)
+      || !settlementTarget.present
+      || !SETTLEMENT_TARGETS.includes(settlementTarget.value)
+      || !remainingSeats.present
+      || (remainingSeats.value !== null && !isPositiveInteger(remainingSeats.value))) {
+      return null;
+    }
+    return {
+      vehicleId: vehicleId.value,
+      settlementTarget: settlementTarget.value,
+      remainingSeats: remainingSeats.value
+    };
+  }
+
+  function readVerifierConstraint(value, kind) {
+    if (!isPlainJsonObject(value)) return null;
+    const fields = kind === 'pressure'
+      ? ['vehicleId', 'triggerVehicleId']
+      : kind === 'initial'
+        ? ['vehicleId', 'colorValue', 'count', 'duration']
+        : kind === 'later'
+          ? ['vehicleId', 'colorValue', 'clickStep', 'count', 'duration']
+          : ['vehicleId', 'colorValue', 'count'];
+    const result = {};
+    for (const field of fields) {
+      const property = readOwnDataValue(value, field);
+      const allowsZero = field === 'vehicleId'
+        || field === 'triggerVehicleId'
+        || field === 'colorValue'
+        || (kind === 'preview' && field === 'count');
+      if (!property.present
+        || !(allowsZero
+          ? isNonNegativeInteger(property.value)
+          : isPositiveInteger(property.value))) {
+        return null;
+      }
+      result[field] = property.value;
+    }
+
+    if (kind === 'initial') {
+      const vehicleIds = verifierArrayProperty(value, 'vehicleIds', isNonNegativeInteger);
+      if (!vehicleIds.valid) return null;
+      result.vehicleIds = [...vehicleIds.values];
+    }
+    return result;
+  }
+
+  function inspectVerifierCompiled(compiled) {
+    if (!isPlainJsonObject(compiled)) return { valid: false };
+    const annotationArray = verifierArrayProperty(compiled, 'annotations');
+    const pressureArray = verifierArrayProperty(compiled, 'pressureLinks');
+    const initialArray = verifierArrayProperty(compiled, 'initialOccupy');
+    const laterArray = verifierArrayProperty(compiled, 'laterOccupy');
+    const previewArray = verifierArrayProperty(compiled, 'rightPreview');
+    const annotations = annotationArray.values.map(readVerifierAnnotation);
+    const pressureLinks = pressureArray.values.map(item => readVerifierConstraint(item, 'pressure'));
+    const initialOccupy = initialArray.values.map(item => readVerifierConstraint(item, 'initial'));
+    const laterOccupy = laterArray.values.map(item => readVerifierConstraint(item, 'later'));
+    const rightPreview = previewArray.values.map(item => readVerifierConstraint(item, 'preview'));
+    const stepByIdProperty = readOwnDataValue(compiled, 'stepById');
+    const stepById = readVerifierIntegerRecord(stepByIdProperty.value, isPositiveInteger);
+    const valid = annotationArray.valid
+      && pressureArray.valid
+      && initialArray.valid
+      && laterArray.valid
+      && previewArray.valid
+      && annotations.every(Boolean)
+      && pressureLinks.every(Boolean)
+      && initialOccupy.every(Boolean)
+      && laterOccupy.every(Boolean)
+      && rightPreview.every(Boolean)
+      && stepByIdProperty.present
+      && stepById.valid;
+    return {
+      valid,
+      annotations: annotations.filter(Boolean),
+      pressureLinks: pressureLinks.filter(Boolean),
+      initialOccupy: initialOccupy.filter(Boolean),
+      laterOccupy: laterOccupy.filter(Boolean),
+      rightPreview: rightPreview.filter(Boolean),
+      stepById: stepById.values
+    };
+  }
+
+  function readVerifierStep(value, index) {
+    if (!isPlainJsonObject(value)) return null;
+    const step = readOwnDataValue(value, 'step');
+    const clickedVehicleId = readOwnDataValue(value, 'clickedVehicleId');
+    const freeSlotsAfter = readOwnDataValue(value, 'freeSlotsAfter');
+    const consumptionProperty = readOwnDataValue(value, 'consumption');
+    const departed = verifierArrayProperty(value, 'departedVehicleIds', isNonNegativeInteger);
+    const slots = verifierArrayProperty(value, 'slots', isVerifierSlot);
+    const belt = verifierArrayProperty(value, 'belt', isNonNegativeInteger);
+    const beltCountsProperty = readOwnDataValue(value, 'beltCounts');
+    const consumption = readVerifierIntegerRecord(consumptionProperty.value);
+    const beltCounts = readVerifierIntegerRecord(beltCountsProperty.value);
+    if (!step.present
+      || step.value !== index + 1
+      || !clickedVehicleId.present
+      || !isNonNegativeInteger(clickedVehicleId.value)
+      || !freeSlotsAfter.present
+      || !isNonNegativeInteger(freeSlotsAfter.value)
+      || freeSlotsAfter.value > 4
+      || !consumptionProperty.present
+      || !consumption.valid
+      || !departed.valid
+      || !slots.valid
+      || slots.values.length !== 4
+      || !belt.valid
+      || !beltCountsProperty.present
+      || !beltCounts.valid) {
+      return null;
+    }
+    return {
+      step: step.value,
+      clickedVehicleId: clickedVehicleId.value,
+      freeSlotsAfter: freeSlotsAfter.value,
+      consumption: consumption.values,
+      departedVehicleIds: [...departed.values],
+      slots: slots.values,
+      belt: [...belt.values],
+      beltCounts: beltCounts.values
+    };
+  }
+
+  function inspectVerifierTrace(trace) {
+    if (!isPlainJsonObject(trace)) return { valid: false, steps: [] };
+    const initialProperty = readOwnDataValue(trace, 'initial');
+    const initial = initialProperty.value;
+    const initialBelt = verifierArrayProperty(initial, 'belt', isNonNegativeInteger);
+    const initialLeft = verifierArrayProperty(initial, 'left', isNonNegativeInteger);
+    const initialRight = verifierArrayProperty(initial, 'right', isNonNegativeInteger);
+    const initialSlots = verifierArrayProperty(initial, 'slots', isVerifierSlot);
+    const stepArray = verifierArrayProperty(trace, 'steps');
+    const steps = stepArray.values.map(readVerifierStep);
+    const departureProperty = readOwnDataValue(trace, 'departureStepById');
+    const departureStepById = readVerifierIntegerRecord(
+      departureProperty.value,
+      isPositiveInteger
+    );
+    const finalBelt = verifierArrayProperty(trace, 'finalBelt', isNonNegativeInteger);
+    const finalLeft = verifierArrayProperty(trace, 'finalLeft', isNonNegativeInteger);
+    const finalRight = verifierArrayProperty(trace, 'finalRight', isNonNegativeInteger);
+    const finalSlots = verifierArrayProperty(trace, 'finalSlots', isVerifierSlot);
+    const remainingVehicleIds = verifierArrayProperty(
+      trace,
+      'remainingVehicleIds',
+      isNonNegativeInteger
+    );
+    const valid = initialProperty.present
+      && isPlainJsonObject(initial)
+      && initialBelt.valid
+      && initialLeft.valid
+      && initialRight.valid
+      && initialSlots.valid
+      && initialSlots.values.length === 4
+      && stepArray.valid
+      && steps.every(Boolean)
+      && departureProperty.present
+      && departureStepById.valid
+      && finalBelt.valid
+      && finalLeft.valid
+      && finalRight.valid
+      && finalSlots.valid
+      && finalSlots.values.length === 4
+      && remainingVehicleIds.valid;
+    return {
+      valid,
+      initial: {
+        belt: [...initialBelt.values],
+        left: [...initialLeft.values],
+        right: [...initialRight.values],
+        slots: [...initialSlots.values]
+      },
+      steps: steps.filter(Boolean),
+      departureStepById: departureStepById.values,
+      finalBelt: [...finalBelt.values],
+      finalLeft: [...finalLeft.values],
+      finalRight: [...finalRight.values],
+      finalSlots: [...finalSlots.values],
+      remainingVehicleIds: [...remainingVehicleIds.values]
+    };
+  }
+
+  function getStepSlot(trace, step, vehicleId) {
+    const row = trace.steps[step - 1];
+    if (!row) return null;
+    return row.slots.find(slot => (
+      slot !== null && readOwnDataValue(slot, 'vehicleId').value === vehicleId
+    )) || null;
+  }
+
+  function findLaterWindow(trace, constraint) {
+    for (let startStep = 1;
+      startStep + constraint.duration - 1 < constraint.clickStep;
+      startStep += 1) {
+      let valid = true;
+      for (let offset = 0; offset < constraint.duration; offset += 1) {
+        const row = trace.steps[startStep + offset - 1];
+        if (!row || (row.beltCounts.get(constraint.colorValue) || 0) < constraint.count) {
+          valid = false;
+          break;
+        }
+      }
+      if (valid) {
+        return {
+          startStep,
+          endStep: startStep + constraint.duration - 1
+        };
+      }
+    }
+    return null;
+  }
+
+  function verifierIssueKey(issue) {
+    return `${issue.category}\u0000${issue.code}\u0000${issue.message}`;
+  }
+
+  function appendMissingBaseIssues(errors, baseErrors) {
+    const existing = new Set(errors.map(verifierIssueKey));
+    baseErrors.forEach(error => {
+      const cloned = cloneVerifierIssue(error, 'model');
+      const key = verifierIssueKey(cloned);
+      if (!existing.has(key)) {
+        existing.add(key);
+        errors.push(cloned);
+      }
+    });
+  }
+
+  function pressureCurveFromTrace(trace) {
+    const stepsProperty = readOwnDataValue(trace, 'steps');
+    const inspection = inspectDenseArrayEntries(stepsProperty.value);
+    if (!stepsProperty.present || !inspection.dense) return [];
+    const curve = [];
+    inspection.entries.forEach((entry, index) => {
+      if (!isPlainJsonObject(entry.value)) return;
+      const step = readOwnDataValue(entry.value, 'step');
+      const freeSlotsAfter = readOwnDataValue(entry.value, 'freeSlotsAfter');
+      if (!step.present
+        || step.value !== index + 1
+        || !freeSlotsAfter.present
+        || !isNonNegativeInteger(freeSlotsAfter.value)
+        || freeSlotsAfter.value > 4) {
+        return;
+      }
+      curve.push({
+        step: step.value,
+        occupiedSlots: 4 - freeSlotsAfter.value,
+        freeSlots: freeSlotsAfter.value
+      });
+    });
+    return curve;
+  }
+
+  function cloneVerifierTrace(trace) {
+    const cloned = cloneJsonSafeDetail(trace);
+    return cloned !== INVALID_JSON_DETAIL
+      && cloned !== null
+      && !Array.isArray(cloned)
+      && isPlainJsonObject(cloned)
+      ? cloned
+      : {};
+  }
+
+  function verify(model, compiled, layout, optionalTrace) {
+    const rawTrace = arguments.length >= 4
+      ? optionalTrace
+      : simulate(model, layout);
+    const compiledIssues = readVerifierIssues(compiled, 'compiled');
+    const traceIssues = readVerifierIssues(rawTrace, 'trace');
+    const errors = [...compiledIssues.issues, ...traceIssues.issues];
+    const pressureProof = [];
+    const occupyProof = [];
+    const pressureCurve = pressureCurveFromTrace(rawTrace);
+    const trace = cloneVerifierTrace(rawTrace);
+    let base;
+    try {
+      base = validateBaseInput(model);
+    } catch {
+      base = validateBaseInput(null);
+    }
+    appendMissingBaseIssues(errors, base.errors);
+
+    const inspectedCompiled = inspectVerifierCompiled(compiled);
+    const inspectedTrace = inspectVerifierTrace(rawTrace);
+    let compiledStructureValid = compiledIssues.valid && inspectedCompiled.valid;
+    let traceStructureValid = traceIssues.valid && inspectedTrace.valid;
+    if (!compiledStructureValid) {
+      errors.push(createIssue(
+        'input_error',
+        'invalid_compiled_structure',
+        'Compiled constraints are incomplete or malformed'
+      ));
+    }
+    if (!traceStructureValid) {
+      errors.push(createIssue(
+        'input_error',
+        'invalid_trace_structure',
+        'Simulation trace is incomplete or malformed'
+      ));
+    }
+
+    const pathProperty = readOwnDataValue(model, 'path');
+    const pathInspection = inspectDenseNonNegativeIntegerArray(pathProperty.value);
+    const capacityProperty = readOwnDataValue(model, 'conveyorCapacity');
+    const modelStructureValid = base.errors.length === 0
+      && pathProperty.present
+      && pathInspection.valid
+      && capacityProperty.present
+      && isPositiveInteger(capacityProperty.value);
+    if (modelStructureValid && compiledStructureValid) {
+      const annotationsById = new Map(
+        inspectedCompiled.annotations.map(annotation => [annotation.vehicleId, annotation])
+      );
+      const pathStepById = new Map(
+        pathInspection.values.map((vehicleId, index) => [vehicleId, index + 1])
+      );
+      const modelColorById = new Map();
+      base.vehiclesById.forEach((vehicle, vehicleId) => {
+        modelColorById.set(vehicleId, readOwnDataValue(vehicle, 'colorValue').value);
+      });
+      const annotationIdsMatch = inspectedCompiled.annotations.length === pathInspection.values.length
+        && pathInspection.values.every(vehicleId => annotationsById.has(vehicleId));
+      const stepsMatch = inspectedCompiled.stepById.size === pathInspection.values.length
+        && pathInspection.values.every((vehicleId, index) => (
+          inspectedCompiled.stepById.get(vehicleId) === index + 1
+        ));
+      const pressureLinksMatch = inspectedCompiled.pressureLinks.every(link => (
+        pathStepById.has(link.vehicleId)
+          && pathStepById.has(link.triggerVehicleId)
+          && pathStepById.get(link.triggerVehicleId) > pathStepById.get(link.vehicleId)
+      ));
+      const initialConstraintsMatch = inspectedCompiled.initialOccupy.every(constraint => (
+        pathStepById.has(constraint.vehicleId)
+          && modelColorById.get(constraint.vehicleId) === constraint.colorValue
+          && constraint.vehicleIds.length > 0
+          && constraint.vehicleIds.every(vehicleId => (
+            pathStepById.has(vehicleId)
+              && modelColorById.get(vehicleId) === constraint.colorValue
+          ))
+      ));
+      const laterConstraintsMatch = inspectedCompiled.laterOccupy.every(constraint => (
+        pathStepById.has(constraint.vehicleId)
+          && modelColorById.get(constraint.vehicleId) === constraint.colorValue
+          && pathStepById.get(constraint.vehicleId) === constraint.clickStep
+      ));
+      const previewConstraintsMatch = inspectedCompiled.rightPreview.every(constraint => (
+        pathStepById.has(constraint.vehicleId)
+          && modelColorById.get(constraint.vehicleId) === constraint.colorValue
+      ));
+      if (!annotationIdsMatch
+        || !stepsMatch
+        || !pressureLinksMatch
+        || !initialConstraintsMatch
+        || !laterConstraintsMatch
+        || !previewConstraintsMatch) {
+        compiledStructureValid = false;
+        errors.push(createIssue(
+          'input_error',
+          'invalid_compiled_structure',
+          'Compiled annotations and step map must match the model path'
+        ));
+      }
+    }
+    if (modelStructureValid
+      && traceStructureValid
+      && traceIssues.issues.length === 0
+      && (inspectedTrace.steps.length !== pathInspection.values.length
+        || inspectedTrace.steps.some((row, index) => (
+          row.clickedVehicleId !== pathInspection.values[index]
+        )))) {
+      traceStructureValid = false;
+      errors.push(createIssue(
+        'input_error',
+        'invalid_trace_structure',
+        'A successful simulation trace must include every path click in order'
+      ));
+    }
+
+    const hasPrimaryErrors = compiledIssues.issues.length > 0
+      || traceIssues.issues.length > 0
+      || base.errors.length > 0;
+    if (!modelStructureValid
+      || !compiledStructureValid
+      || !traceStructureValid
+      || hasPrimaryErrors) {
+      return { errors, trace, pressureProof, occupyProof, pressureCurve };
+    }
+
+    const path = pathInspection.values;
+    const conveyorCapacity = capacityProperty.value;
+    const byId = new Map();
+    base.vehiclesById.forEach((vehicle, vehicleId) => {
+      byId.set(vehicleId, {
+        vehicleId,
+        colorValue: readOwnDataValue(vehicle, 'colorValue').value
+      });
+    });
+    const annotationById = new Map(
+      inspectedCompiled.annotations.map(annotation => [annotation.vehicleId, annotation])
+    );
+
+    if (inspectedTrace.initial.belt.length !== conveyorCapacity) {
+      errors.push(createIssue(
+        'constraint_conflict',
+        'belt_capacity_mismatch',
+        'Initial belt length must equal conveyor capacity',
+        {
+          conveyorCapacity,
+          actual: inspectedTrace.initial.belt.length
+        }
+      ));
+    }
+    const layoutCounts = countValues([
+      ...inspectedTrace.initial.belt,
+      ...inspectedTrace.initial.left,
+      ...inspectedTrace.initial.right
+    ]);
+    const colorValues = [...new Set([
+      ...base.passengerCounts.keys(),
+      ...layoutCounts.keys()
+    ])].sort((left, right) => left - right);
+    colorValues.forEach(colorValue => {
+      const expected = base.passengerCounts.get(colorValue) || 0;
+      const actual = layoutCounts.get(colorValue) || 0;
+      if (expected !== actual) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'layout_color_total_mismatch',
+          `Layout color ${String(colorValue)} total does not match the model`,
+          { colorValue, expected, actual }
+        ));
+      }
+    });
+
+    path.forEach((vehicleId, index) => {
+      const step = index + 1;
+      const row = inspectedTrace.steps[index];
+      const annotation = annotationById.get(vehicleId);
+      const vehicle = byId.get(vehicleId);
+      if (!row || !annotation || !vehicle) return;
+      const boarded = row.consumption.get(vehicleId) || 0;
+      const slot = getStepSlot(inspectedTrace, step, vehicleId);
+      const colorValue = vehicle.colorValue;
+      if (annotation.settlementTarget === 'instant'
+        && !row.departedVehicleIds.includes(vehicleId)) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'instant_target_missed',
+          `Vehicle #${vehicleId} did not depart on its click step`,
+          { vehicleId, step, colorValue, hint: 'move_color_earlier' }
+        ));
+      }
+      if (annotation.settlementTarget === 'empty'
+        && (boarded !== 0 || slot === null)) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'empty_target_missed',
+          `Vehicle #${vehicleId} did not remain empty after its click step`,
+          { vehicleId, step, colorValue, hint: 'move_color_later' }
+        ));
+      }
+      if (annotation.settlementTarget === 'partial'
+        && (slot === null
+          || readOwnDataValue(slot, 'remaining').value !== annotation.remainingSeats)) {
+        const remaining = slot === null
+          ? 0
+          : readOwnDataValue(slot, 'remaining').value;
+        errors.push(createIssue(
+          'constraint_conflict',
+          'partial_target_missed',
+          `Vehicle #${vehicleId} did not keep the requested partial seats`,
+          {
+            vehicleId,
+            step,
+            colorValue,
+            remainingSeats: annotation.remainingSeats,
+            actualRemainingSeats: slot === null ? null : remaining,
+            hint: slot !== null && remaining > annotation.remainingSeats
+              ? 'move_color_earlier'
+              : 'move_color_later'
+          }
+        ));
+      }
+    });
+
+    inspectedCompiled.pressureLinks.forEach(link => {
+      const triggerStep = path.indexOf(link.triggerVehicleId) + 1;
+      const departureStep = inspectedTrace.departureStepById.has(link.vehicleId)
+        ? inspectedTrace.departureStepById.get(link.vehicleId)
+        : null;
+      if (triggerStep < 1) return;
+      if (departureStep !== triggerStep) {
+        const vehicle = byId.get(link.vehicleId);
+        errors.push(createIssue(
+          'constraint_conflict',
+          'pressure_release_step_missed',
+          `Pressure vehicle #${link.vehicleId} did not depart at trigger step ${triggerStep}`,
+          {
+            vehicleId: link.vehicleId,
+            triggerVehicleId: link.triggerVehicleId,
+            triggerStep,
+            departureStep,
+            colorValue: vehicle ? vehicle.colorValue : null,
+            hint: departureStep !== null && departureStep < triggerStep
+              ? 'move_color_later'
+              : 'move_color_earlier'
+          }
+        ));
+      }
+      pressureProof.push({
+        vehicleId: link.vehicleId,
+        triggerVehicleId: link.triggerVehicleId,
+        triggerStep,
+        departureStep
+      });
+    });
+
+    inspectedCompiled.initialOccupy.forEach(constraint => {
+      const initialCount = countValues(inspectedTrace.initial.belt)
+        .get(constraint.colorValue) || 0;
+      let held = true;
+      for (let step = 1; step <= constraint.duration; step += 1) {
+        const row = inspectedTrace.steps[step - 1];
+        if (!row || (row.beltCounts.get(constraint.colorValue) || 0) < constraint.count) {
+          held = false;
+          break;
+        }
+      }
+      if (initialCount !== constraint.count || !held) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'initial_occupy_missed',
+          `Color ${String(constraint.colorValue)} missed its initial occupy requirement`,
+          {
+            vehicleId: constraint.vehicleId,
+            colorValue: constraint.colorValue,
+            hint: 'repair_initial_occupy'
+          }
+        ));
+      }
+      occupyProof.push({
+        type: 'initial',
+        vehicleId: constraint.vehicleId,
+        colorValue: constraint.colorValue,
+        count: constraint.count,
+        duration: constraint.duration,
+        vehicleIds: [...constraint.vehicleIds],
+        initialCount,
+        startStep: 0,
+        endStep: constraint.duration
+      });
+    });
+
+    inspectedCompiled.laterOccupy.forEach(constraint => {
+      const window = findLaterWindow(inspectedTrace, constraint);
+      if (window === null) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'later_occupy_missed',
+          `Vehicle #${constraint.vehicleId} has no complete later occupy window`,
+          {
+            vehicleId: constraint.vehicleId,
+            colorValue: constraint.colorValue,
+            hint: 'repair_later_occupy'
+          }
+        ));
+      }
+      occupyProof.push({
+        type: 'later',
+        vehicleId: constraint.vehicleId,
+        colorValue: constraint.colorValue,
+        clickStep: constraint.clickStep,
+        count: constraint.count,
+        duration: constraint.duration,
+        startStep: window === null ? null : window.startStep,
+        endStep: window === null ? null : window.endStep
+      });
+    });
+
+    const previewCounts = countValues(inspectedTrace.initial.right.slice(0, 10));
+    inspectedCompiled.rightPreview.forEach(constraint => {
+      if ((previewCounts.get(constraint.colorValue) || 0) !== constraint.count) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'right_preview_missed',
+          `Color ${String(constraint.colorValue)} has the wrong right preview count`,
+          {
+            vehicleId: constraint.vehicleId,
+            colorValue: constraint.colorValue,
+            expected: constraint.count,
+            actual: previewCounts.get(constraint.colorValue) || 0,
+            hint: 'repair_right_preview'
+          }
+        ));
+      }
+    });
+    if (inspectedTrace.initial.right.length < 10) {
+      errors.push(createIssue(
+        'constraint_conflict',
+        'right_queue_shorter_than_ten',
+        'Initial right queue must contain at least ten passengers'
+      ));
+    }
+
+    if (inspectedTrace.remainingVehicleIds.length > 0
+      || inspectedTrace.finalSlots.some(slot => slot !== null)
+      || inspectedTrace.finalBelt.length > 0
+      || inspectedTrace.finalLeft.length > 0
+      || inspectedTrace.finalRight.length > 0) {
+      errors.push(createIssue(
+        'constraint_conflict',
+        'final_state_not_clear',
+        'The correct path did not clear every vehicle and passenger',
+        { hint: 'move_color_earlier' }
+      ));
+    }
+
+    return { errors, trace, pressureProof, occupyProof, pressureCurve };
+  }
+
   global.PressureQueueCore = Object.freeze({
     SETTLEMENT_TARGETS,
     STRENGTH_MODES,
@@ -1427,6 +2151,7 @@
     createIssue,
     validateBaseInput,
     compileConstraints,
-    simulate
+    simulate,
+    verify
   });
 }(window));
