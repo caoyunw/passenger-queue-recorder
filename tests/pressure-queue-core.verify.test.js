@@ -384,6 +384,49 @@ test('simulates once by default and never reads raw layout when a trace is suppl
   assert.doesNotThrow(() => core.verify(fixture.model, compiled, forbiddenLayout, suppliedTrace));
 });
 
+test('treats an explicit undefined trace exactly like an omitted trace', () => {
+  const fixture = makeThreePressureScenario();
+  const compiled = core.compileConstraints(fixture.model);
+  let omittedReads = 0;
+  let undefinedReads = 0;
+  const observe = increment => new Proxy(fixture.layout, {
+    getOwnPropertyDescriptor(target, key) {
+      if (['belt', 'left', 'right'].includes(key)) increment();
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    }
+  });
+
+  const omitted = core.verify(
+    fixture.model,
+    compiled,
+    observe(() => { omittedReads += 1; })
+  );
+  const explicitUndefined = core.verify(
+    fixture.model,
+    compiled,
+    observe(() => { undefinedReads += 1; }),
+    undefined
+  );
+
+  assert.equal(omittedReads, 3, 'omitted trace must simulate exactly once');
+  assert.equal(undefinedReads, 3, 'undefined trace must simulate exactly once');
+  assert.deepEqual(json(explicitUndefined), json(omitted));
+});
+
+test('keeps an explicit null trace invalid without falling back to simulation', () => {
+  const fixture = makeThreePressureScenario();
+  const compiled = core.compileConstraints(fixture.model);
+  const forbiddenLayout = new Proxy({}, {
+    getOwnPropertyDescriptor() {
+      throw new Error('null trace must not fall back to simulation');
+    }
+  });
+
+  const result = core.verify(fixture.model, compiled, forbiddenLayout, null);
+
+  assert(codes(result).includes('invalid_trace_structure'));
+});
+
 test('does not mutate inputs and isolates every output reference', () => {
   let fixture = patchAnnotation(makeThreePressureScenario(), 7, {
     laterOccupy: { mode: 'custom', count: 4, duration: 3 }

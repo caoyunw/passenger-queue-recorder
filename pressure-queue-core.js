@@ -1780,7 +1780,7 @@
   }
 
   function verify(model, compiled, layout, optionalTrace) {
-    const rawTrace = arguments.length >= 4
+    const rawTrace = optionalTrace !== undefined
       ? optionalTrace
       : simulate(model, layout);
     const compiledIssues = readVerifierIssues(compiled, 'compiled');
