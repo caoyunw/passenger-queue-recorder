@@ -155,7 +155,7 @@ test('reports both partial mismatch hint directions', () => {
   )));
 });
 
-test('checks instant departure and empty stable-slot presence on the click row', () => {
+test('rejects forged instant-departure and empty-slot click rows', () => {
   const fixture = makeThreePressureScenario();
   const cleanTrace = copy(core.simulate(fixture.model, fixture.layout));
   const missedInstant = copy(cleanTrace);
@@ -168,26 +168,18 @@ test('checks instant departure and empty stable-slot presence on the click row',
   };
   missedInstant.steps[3].freeSlotsAfter = 0;
   const instantResult = verifyFixture(fixture, missedInstant);
-  assert(findIssue(instantResult, 'instant_target_missed', issue => (
-    issue.vehicleId === 4
-      && issue.step === 4
-      && issue.colorValue === 4
-      && issue.hint === 'move_color_earlier'
-  )));
+  assert(codes(instantResult).includes('invalid_trace_structure'));
+  assert.deepEqual(json(instantResult.pressureProof), []);
 
   const missedEmpty = copy(cleanTrace);
   missedEmpty.steps[0].slots[0] = null;
   missedEmpty.steps[0].freeSlotsAfter = 4;
   const emptyResult = verifyFixture(fixture, missedEmpty);
-  assert(findIssue(emptyResult, 'empty_target_missed', issue => (
-    issue.vehicleId === 1
-      && issue.step === 1
-      && issue.colorValue === 1
-      && issue.hint === 'move_color_later'
-  )));
+  assert(codes(emptyResult).includes('invalid_trace_structure'));
+  assert.deepEqual(json(emptyResult.pressureProof), []);
 });
 
-test('requires a pressure departure to equal the trigger path step exactly', () => {
+test('rejects forged pressure departure steps before emitting proof', () => {
   const fixture = makeThreePressureScenario();
   const cleanTrace = copy(core.simulate(fixture.model, fixture.layout));
   const earlyTrace = copy(cleanTrace);
@@ -195,24 +187,20 @@ test('requires a pressure departure to equal the trigger path step exactly', () 
 
   const earlyResult = verifyFixture(fixture, earlyTrace);
 
-  assert(findIssue(earlyResult, 'pressure_release_step_missed', issue => (
-    issue.vehicleId === 2 && issue.departureStep === 5 && issue.hint === 'move_color_later'
-  )));
-  assert.equal(earlyResult.pressureProof.length, 3);
+  assert(codes(earlyResult).includes('invalid_trace_structure'));
+  assert.deepEqual(json(earlyResult.pressureProof), []);
 
   const lateTrace = copy(cleanTrace);
   lateTrace.departureStepById[2] = 7;
   const lateResult = verifyFixture(fixture, lateTrace);
-  assert(findIssue(lateResult, 'pressure_release_step_missed', issue => (
-    issue.vehicleId === 2 && issue.departureStep === 7 && issue.hint === 'move_color_earlier'
-  )));
+  assert(codes(lateResult).includes('invalid_trace_structure'));
+  assert.deepEqual(json(lateResult.pressureProof), []);
 
   const missingTrace = copy(cleanTrace);
   delete missingTrace.departureStepById[2];
   const missingResult = verifyFixture(fixture, missingTrace);
-  assert(findIssue(missingResult, 'pressure_release_step_missed', issue => (
-    issue.vehicleId === 2 && issue.departureStep === null && issue.hint === 'move_color_earlier'
-  )));
+  assert(codes(missingResult).includes('invalid_trace_structure'));
+  assert.deepEqual(json(missingResult.pressureProof), []);
 });
 
 test('requires exact initial count and holding it for every stable step', () => {
@@ -340,7 +328,7 @@ test('checks exact belt capacity and exact layout color totals including one-sid
   )));
 });
 
-test('requires every final collection and remaining vehicle list to be empty', () => {
+test('rejects forged final collections and remaining vehicle lists', () => {
   const fixture = makeThreePressureScenario();
   const cleanTrace = copy(core.simulate(fixture.model, fixture.layout));
   const mutations = [
@@ -355,33 +343,50 @@ test('requires every final collection and remaining vehicle list to be empty', (
     const trace = copy(cleanTrace);
     mutate(trace);
     const result = verifyFixture(fixture, trace);
-    assert(findIssue(result, 'final_state_not_clear', issue => (
-      issue.hint === 'move_color_earlier'
-    )), `final case ${index}`);
+    assert(codes(result).includes('invalid_trace_structure'), `final case ${index}`);
+    assert.deepEqual(json(result.pressureProof), [], `final case ${index}`);
+    assert.deepEqual(json(result.trace.finalBelt), [], `final case ${index}`);
   });
 });
 
-test('simulates once by default and never reads raw layout when a trace is supplied', () => {
+test('simulates once and validates the raw layout even when a trace is supplied', () => {
   const fixture = makeThreePressureScenario();
   const compiled = core.compileConstraints(fixture.model);
-  let descriptorReads = 0;
-  const observedLayout = new Proxy(fixture.layout, {
+  let defaultReads = 0;
+  const defaultLayout = new Proxy(fixture.layout, {
     getOwnPropertyDescriptor(target, key) {
-      if (['belt', 'left', 'right'].includes(key)) descriptorReads += 1;
+      if (['belt', 'left', 'right'].includes(key)) defaultReads += 1;
       return Reflect.getOwnPropertyDescriptor(target, key);
     }
   });
-  const defaultResult = core.verify(fixture.model, compiled, observedLayout);
+  const defaultResult = core.verify(fixture.model, compiled, defaultLayout);
   assert.deepEqual(json(defaultResult.errors), []);
-  assert.equal(descriptorReads, 3);
+  assert.equal(defaultReads, 3);
 
   const suppliedTrace = copy(core.simulate(fixture.model, fixture.layout));
-  const forbiddenLayout = new Proxy({}, {
-    getOwnPropertyDescriptor() {
-      throw new Error('raw layout must not be read');
+  let suppliedReads = 0;
+  const differentLayout = new Proxy({
+    belt: Array(12).fill(99),
+    left: [...fixture.layout.left],
+    right: [...fixture.layout.right]
+  }, {
+    getOwnPropertyDescriptor(target, key) {
+      if (['belt', 'left', 'right'].includes(key)) suppliedReads += 1;
+      return Reflect.getOwnPropertyDescriptor(target, key);
     }
   });
-  assert.doesNotThrow(() => core.verify(fixture.model, compiled, forbiddenLayout, suppliedTrace));
+  const suppliedResult = core.verify(
+    fixture.model,
+    compiled,
+    differentLayout,
+    suppliedTrace
+  );
+  assert.equal(suppliedReads, 3);
+  assert(codes(suppliedResult).includes('invalid_trace_structure'));
+  assert(findIssue(suppliedResult, 'layout_color_total_mismatch', issue => (
+    issue.colorValue === 99 && issue.expected === 0 && issue.actual === 12
+  )));
+  assert.deepEqual(json(suppliedResult.pressureProof), []);
 });
 
 test('treats an explicit undefined trace exactly like an omitted trace', () => {
@@ -413,12 +418,12 @@ test('treats an explicit undefined trace exactly like an omitted trace', () => {
   assert.deepEqual(json(explicitUndefined), json(omitted));
 });
 
-test('keeps an explicit null trace invalid without falling back to simulation', () => {
+test('keeps an explicit null trace invalid while safely replaying the layout', () => {
   const fixture = makeThreePressureScenario();
   const compiled = core.compileConstraints(fixture.model);
   const forbiddenLayout = new Proxy({}, {
     getOwnPropertyDescriptor() {
-      throw new Error('null trace must not fall back to simulation');
+      throw new Error('hostile layout descriptor');
     }
   });
 
@@ -462,34 +467,28 @@ test('does not mutate inputs and isolates every output reference', () => {
   assert.doesNotThrow(() => JSON.stringify(result));
 });
 
-test('keeps supplied compile and trace errors but suppresses unreliable derived failures', () => {
-  const fixture = makeThreePressureScenario();
+test('keeps compiler errors while reporting reliable belt and final-state failures', () => {
+  const fixture = patchAnnotation(makeThreePressureScenario(), 1, {
+    settlementTarget: 'normal'
+  });
+  fixture.layout.belt.pop();
   const compiled = core.compileConstraints(fixture.model);
-  compiled.errors.push(core.createIssue(
-    'input_error',
-    'compile_primary',
-    'compile primary',
-    { nested: { value: 1 } }
-  ));
+  assert(codes({ errors: compiled.errors }).includes('pressure_requires_waiting_target'));
   const trace = copy(core.simulate(fixture.model, fixture.layout));
-  trace.errors.push(core.createIssue(
-    'input_error',
-    'trace_primary',
-    'trace primary',
-    { nested: { value: 2 } }
-  ));
-  trace.finalBelt.push(1);
 
   const result = core.verify(fixture.model, compiled, fixture.layout, trace);
 
-  assert.deepEqual(codes(result), ['compile_primary', 'trace_primary']);
+  assert(codes(result).includes('pressure_requires_waiting_target'));
+  assert(codes(result).includes('belt_capacity_mismatch'));
+  assert(findIssue(result, 'layout_color_total_mismatch', issue => (
+    issue.colorValue === 6 && issue.expected === 4 && issue.actual === 3
+  )));
+  assert(codes(result).includes('final_state_not_clear'));
   assert.equal(result.pressureCurve.length, 8);
   assert.deepEqual(json(result.pressureProof), []);
   assert.deepEqual(json(result.occupyProof), []);
-  result.errors[0].nested.value = 99;
-  result.errors[1].nested.value = 99;
-  assert.equal(compiled.errors[0].nested.value, 1);
-  assert.equal(trace.errors[0].nested.value, 2);
+  result.errors[0].message = 'changed';
+  assert.notEqual(compiled.errors[0].message, 'changed');
 });
 
 test('handles malformed model, compiled data, and traces without throwing and stays JSON safe', () => {
@@ -518,7 +517,11 @@ test('handles malformed model, compiled data, and traces without throwing and st
   ] };
   const result = core.verify(fixture.model, compiled, fixture.layout, partial);
   assert(codes(result).includes('trace_kept'));
-  assert.deepEqual(json(result.pressureCurve), [{ step: 1, occupiedSlots: 1, freeSlots: 3 }]);
+  assert(codes(result).includes('invalid_trace_structure'));
+  assert.deepEqual(json(result.pressureCurve), json(
+    core.verify(fixture.model, compiled, fixture.layout).pressureCurve
+  ));
+  assert.deepEqual(json(result.pressureProof), []);
 });
 
 test('rejects internally inconsistent compiled links and trace click rows instead of pseudo-passing', () => {
@@ -539,6 +542,63 @@ test('rejects internally inconsistent compiled links and trace click rows instea
   assert.deepEqual(json(traceResult.pressureProof), []);
 });
 
+test('rejects compiled constraints from an otherwise identical all-normal model', () => {
+  const fixture = makeThreePressureScenario();
+  const allNormalCompiled = core.compileConstraints(normalFixture().model);
+
+  const result = core.verify(fixture.model, allNormalCompiled, fixture.layout);
+
+  assert(codes(result).includes('invalid_compiled_structure'));
+  assert.deepEqual(json(result.pressureProof), []);
+  assert.deepEqual(json(result.occupyProof), []);
+});
+
+test('rejects forged trace transitions instead of deriving proofs from them', () => {
+  const fixture = makeThreePressureScenario();
+  const compiled = core.compileConstraints(fixture.model);
+  const cleanTrace = copy(core.simulate(fixture.model, fixture.layout));
+  const forgeries = [
+    {
+      name: 'free slot count disagrees with slots',
+      mutate(trace) { trace.steps[0].freeSlotsAfter = 4; }
+    },
+    {
+      name: 'belt counts disagree with belt',
+      mutate(trace) { trace.steps[0].beltCounts[99] = 1; }
+    },
+    {
+      name: 'departure list disagrees with departure map',
+      mutate(trace) { trace.steps[0].departedVehicleIds.push(8); }
+    }
+  ];
+
+  forgeries.forEach(({ name, mutate }) => {
+    const forgedTrace = copy(cleanTrace);
+    mutate(forgedTrace);
+    const result = core.verify(fixture.model, compiled, fixture.layout, forgedTrace);
+    assert(codes(result).includes('invalid_trace_structure'), name);
+    assert.deepEqual(json(result.pressureProof), [], name);
+    assert.deepEqual(json(result.occupyProof), [], name);
+  });
+
+  const laterFixture = patchAnnotation(fixture, 7, {
+    laterOccupy: { mode: 'custom', count: 4, duration: 4 }
+  });
+  const laterCompiled = core.compileConstraints(laterFixture.model);
+  const forgedLaterTrace = copy(core.simulate(laterFixture.model, laterFixture.layout));
+  forgedLaterTrace.steps.slice(0, 4).forEach(row => { row.beltCounts[7] = 4; });
+
+  const laterResult = core.verify(
+    laterFixture.model,
+    laterCompiled,
+    laterFixture.layout,
+    forgedLaterTrace
+  );
+
+  assert(codes(laterResult).includes('invalid_trace_structure'));
+  assert.deepEqual(json(laterResult.occupyProof), []);
+});
+
 test('returns deterministic ordinary JSON-safe errors and proof objects', () => {
   const fixture = makeThreePressureScenario();
   fixture.layout.right[0] = 99;
@@ -550,6 +610,23 @@ test('returns deterministic ordinary JSON-safe errors and proof objects', () => 
   assert(first.errors.every(error => Object.prototype.toString.call(error) === '[object Object]'));
   assert(first.pressureProof.every(item => Object.prototype.toString.call(item) === '[object Object]'));
   assert.doesNotThrow(() => JSON.stringify(first));
+});
+
+test('deduplicates only fully identical supplied and derived issues', () => {
+  const fixture = makeThreePressureScenario();
+  fixture.layout.belt.pop();
+  const compiled = core.compileConstraints(fixture.model);
+  compiled.errors.push(core.createIssue(
+    'constraint_conflict',
+    'belt_capacity_mismatch',
+    'Initial belt length must equal conveyor capacity',
+    { conveyorCapacity: 12, actual: 11 }
+  ));
+
+  const result = core.verify(fixture.model, compiled, fixture.layout);
+
+  assert.equal(codes(result).filter(code => code === 'belt_capacity_mismatch').length, 1);
+  assert(codes(result).includes('invalid_compiled_structure'));
 });
 
 let failed = 0;

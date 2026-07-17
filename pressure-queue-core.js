@@ -1728,19 +1728,136 @@
     return null;
   }
 
-  function verifierIssueKey(issue) {
-    return `${issue.category}\u0000${issue.code}\u0000${issue.message}`;
+  function verifierJsonObjectEntries(value) {
+    if (!isPlainJsonObject(value)) return null;
+
+    let keys;
+    try {
+      keys = Reflect.ownKeys(value);
+    } catch {
+      return null;
+    }
+
+    const entries = [];
+    for (const key of keys) {
+      if (typeof key !== 'string') continue;
+      let descriptor;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(value, key);
+      } catch {
+        return null;
+      }
+      if (!descriptor) return null;
+      if (key === 'toJSON') return null;
+      if (!descriptor.enumerable) continue;
+      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) return null;
+      if (descriptor.value === undefined
+        || typeof descriptor.value === 'function'
+        || typeof descriptor.value === 'symbol') {
+        continue;
+      }
+      entries.push([key, descriptor.value]);
+    }
+    entries.sort((left, right) => (
+      left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0
+    ));
+    return entries;
+  }
+
+  function verifierJsonEqual(left, right, leftAncestors = new WeakSet(), rightAncestors = new WeakSet()) {
+    if (left === right) {
+      return typeof left !== 'number' || Number.isFinite(left);
+    }
+    if (left === null || right === null) return false;
+    if (typeof left !== typeof right) return false;
+    if (typeof left !== 'object') return false;
+    if (leftAncestors.has(left) || rightAncestors.has(right)) return false;
+
+    let leftIsArray;
+    let rightIsArray;
+    try {
+      leftIsArray = Array.isArray(left);
+      rightIsArray = Array.isArray(right);
+    } catch {
+      return false;
+    }
+    if (leftIsArray !== rightIsArray) return false;
+
+    leftAncestors.add(left);
+    rightAncestors.add(right);
+    try {
+      if (leftIsArray) {
+        if (readOwnDataValue(left, 'toJSON').present
+          || readOwnDataValue(right, 'toJSON').present) {
+          return false;
+        }
+        const leftInspection = inspectDenseArrayEntries(left);
+        const rightInspection = inspectDenseArrayEntries(right);
+        if (!leftInspection.dense
+          || !rightInspection.dense
+          || leftInspection.entries.length !== rightInspection.entries.length) {
+          return false;
+        }
+        return leftInspection.entries.every((entry, index) => {
+          const other = rightInspection.entries[index];
+          if (entry.value === INVALID_JSON_DETAIL || other.value === INVALID_JSON_DETAIL) {
+            return false;
+          }
+          const leftValue = entry.value === undefined
+            || typeof entry.value === 'function'
+            || typeof entry.value === 'symbol'
+            ? null
+            : entry.value;
+          const rightValue = other.value === undefined
+            || typeof other.value === 'function'
+            || typeof other.value === 'symbol'
+            ? null
+            : other.value;
+          return verifierJsonEqual(
+            leftValue,
+            rightValue,
+            leftAncestors,
+            rightAncestors
+          );
+        });
+      }
+
+      const leftEntries = verifierJsonObjectEntries(left);
+      const rightEntries = verifierJsonObjectEntries(right);
+      if (leftEntries === null
+        || rightEntries === null
+        || leftEntries.length !== rightEntries.length) {
+        return false;
+      }
+      return leftEntries.every((entry, index) => (
+        entry[0] === rightEntries[index][0]
+          && verifierJsonEqual(
+            entry[1],
+            rightEntries[index][1],
+            leftAncestors,
+            rightAncestors
+          )
+      ));
+    } finally {
+      leftAncestors.delete(left);
+      rightAncestors.delete(right);
+    }
+  }
+
+  function appendUniqueVerifierIssue(errors, issue) {
+    if (!errors.some(existing => verifierJsonEqual(existing, issue))) errors.push(issue);
+  }
+
+  function verifierResult(errors, trace, pressureProof, occupyProof, pressureCurve) {
+    const uniqueErrors = [];
+    errors.forEach(error => appendUniqueVerifierIssue(uniqueErrors, error));
+    return { errors: uniqueErrors, trace, pressureProof, occupyProof, pressureCurve };
   }
 
   function appendMissingBaseIssues(errors, baseErrors) {
-    const existing = new Set(errors.map(verifierIssueKey));
     baseErrors.forEach(error => {
       const cloned = cloneVerifierIssue(error, 'model');
-      const key = verifierIssueKey(cloned);
-      if (!existing.has(key)) {
-        existing.add(key);
-        errors.push(cloned);
-      }
+      appendUniqueVerifierIssue(errors, cloned);
     });
   }
 
@@ -1780,16 +1897,35 @@
   }
 
   function verify(model, compiled, layout, optionalTrace) {
-    const rawTrace = optionalTrace !== undefined
-      ? optionalTrace
-      : simulate(model, layout);
-    const compiledIssues = readVerifierIssues(compiled, 'compiled');
-    const traceIssues = readVerifierIssues(rawTrace, 'trace');
-    const errors = [...compiledIssues.issues, ...traceIssues.issues];
+    let canonicalCompiled;
+    let canonicalTrace;
+    try {
+      canonicalCompiled = compileConstraints(model);
+    } catch {
+      canonicalCompiled = compileConstraints(null);
+    }
+    try {
+      canonicalTrace = simulate(model, layout);
+    } catch {
+      canonicalTrace = simulate(null, null);
+    }
+
+    const suppliedTrace = optionalTrace !== undefined ? optionalTrace : canonicalTrace;
+    const suppliedCompiledIssues = readVerifierIssues(compiled, 'compiled');
+    const suppliedTraceIssues = readVerifierIssues(suppliedTrace, 'trace');
+    const canonicalCompiledIssues = readVerifierIssues(canonicalCompiled, 'compiled');
+    const canonicalTraceIssues = readVerifierIssues(canonicalTrace, 'trace');
+    const errors = [];
+    [
+      ...suppliedCompiledIssues.issues,
+      ...suppliedTraceIssues.issues,
+      ...canonicalCompiledIssues.issues,
+      ...canonicalTraceIssues.issues
+    ].forEach(issue => appendUniqueVerifierIssue(errors, issue));
     const pressureProof = [];
     const occupyProof = [];
-    const pressureCurve = pressureCurveFromTrace(rawTrace);
-    const trace = cloneVerifierTrace(rawTrace);
+    const pressureCurve = pressureCurveFromTrace(canonicalTrace);
+    const trace = cloneVerifierTrace(canonicalTrace);
     let base;
     try {
       base = validateBaseInput(model);
@@ -1798,22 +1934,25 @@
     }
     appendMissingBaseIssues(errors, base.errors);
 
-    const inspectedCompiled = inspectVerifierCompiled(compiled);
-    const inspectedTrace = inspectVerifierTrace(rawTrace);
-    let compiledStructureValid = compiledIssues.valid && inspectedCompiled.valid;
-    let traceStructureValid = traceIssues.valid && inspectedTrace.valid;
-    if (!compiledStructureValid) {
+    const inspectedCompiled = inspectVerifierCompiled(canonicalCompiled);
+    const inspectedTrace = inspectVerifierTrace(canonicalTrace);
+    let compiledStructureValid = canonicalCompiledIssues.valid && inspectedCompiled.valid;
+    let traceStructureValid = canonicalTraceIssues.valid && inspectedTrace.valid;
+    const compiledMatchesCanonical = verifierJsonEqual(canonicalCompiled, compiled);
+    const traceMatchesCanonical = optionalTrace === undefined
+      || verifierJsonEqual(canonicalTrace, optionalTrace);
+    if (!compiledStructureValid || !compiledMatchesCanonical) {
       errors.push(createIssue(
         'input_error',
         'invalid_compiled_structure',
-        'Compiled constraints are incomplete or malformed'
+        'Compiled constraints must exactly match canonical compilation of the model'
       ));
     }
-    if (!traceStructureValid) {
+    if (!traceStructureValid || !traceMatchesCanonical) {
       errors.push(createIssue(
         'input_error',
         'invalid_trace_structure',
-        'Simulation trace is incomplete or malformed'
+        'Supplied trace must exactly match canonical simulation of the model and layout'
       ));
     }
 
@@ -1872,36 +2011,26 @@
         || !laterConstraintsMatch
         || !previewConstraintsMatch) {
         compiledStructureValid = false;
-        errors.push(createIssue(
+        appendUniqueVerifierIssue(errors, createIssue(
           'input_error',
           'invalid_compiled_structure',
-          'Compiled annotations and step map must match the model path'
+          'Compiled constraints must exactly match canonical compilation of the model'
         ));
       }
     }
     if (modelStructureValid
       && traceStructureValid
-      && traceIssues.issues.length === 0
+      && canonicalTraceIssues.issues.length === 0
       && (inspectedTrace.steps.length !== pathInspection.values.length
         || inspectedTrace.steps.some((row, index) => (
           row.clickedVehicleId !== pathInspection.values[index]
         )))) {
       traceStructureValid = false;
-      errors.push(createIssue(
+      appendUniqueVerifierIssue(errors, createIssue(
         'input_error',
         'invalid_trace_structure',
-        'A successful simulation trace must include every path click in order'
+        'Supplied trace must exactly match canonical simulation of the model and layout'
       ));
-    }
-
-    const hasPrimaryErrors = compiledIssues.issues.length > 0
-      || traceIssues.issues.length > 0
-      || base.errors.length > 0;
-    if (!modelStructureValid
-      || !compiledStructureValid
-      || !traceStructureValid
-      || hasPrimaryErrors) {
-      return { errors, trace, pressureProof, occupyProof, pressureCurve };
     }
 
     const path = pathInspection.values;
@@ -1917,38 +2046,92 @@
       inspectedCompiled.annotations.map(annotation => [annotation.vehicleId, annotation])
     );
 
-    if (inspectedTrace.initial.belt.length !== conveyorCapacity) {
-      errors.push(createIssue(
-        'constraint_conflict',
-        'belt_capacity_mismatch',
-        'Initial belt length must equal conveyor capacity',
-        {
-          conveyorCapacity,
-          actual: inspectedTrace.initial.belt.length
-        }
-      ));
-    }
-    const layoutCounts = countValues([
-      ...inspectedTrace.initial.belt,
-      ...inspectedTrace.initial.left,
-      ...inspectedTrace.initial.right
-    ]);
-    const colorValues = [...new Set([
-      ...base.passengerCounts.keys(),
-      ...layoutCounts.keys()
-    ])].sort((left, right) => left - right);
-    colorValues.forEach(colorValue => {
-      const expected = base.passengerCounts.get(colorValue) || 0;
-      const actual = layoutCounts.get(colorValue) || 0;
-      if (expected !== actual) {
+    if (modelStructureValid && traceStructureValid) {
+      if (inspectedTrace.initial.belt.length !== conveyorCapacity) {
         errors.push(createIssue(
           'constraint_conflict',
-          'layout_color_total_mismatch',
-          `Layout color ${String(colorValue)} total does not match the model`,
-          { colorValue, expected, actual }
+          'belt_capacity_mismatch',
+          'Initial belt length must equal conveyor capacity',
+          {
+            conveyorCapacity,
+            actual: inspectedTrace.initial.belt.length
+          }
         ));
       }
-    });
+      const layoutCounts = countValues([
+        ...inspectedTrace.initial.belt,
+        ...inspectedTrace.initial.left,
+        ...inspectedTrace.initial.right
+      ]);
+      const colorValues = [...new Set([
+        ...base.passengerCounts.keys(),
+        ...layoutCounts.keys()
+      ])].sort((left, right) => left - right);
+      colorValues.forEach(colorValue => {
+        const expected = base.passengerCounts.get(colorValue) || 0;
+        const actual = layoutCounts.get(colorValue) || 0;
+        if (expected !== actual) {
+          errors.push(createIssue(
+            'constraint_conflict',
+            'layout_color_total_mismatch',
+            `Layout color ${String(colorValue)} total does not match the model`,
+            { colorValue, expected, actual }
+          ));
+        }
+      });
+
+      if (compiledStructureValid) {
+        const previewCounts = countValues(inspectedTrace.initial.right.slice(0, 10));
+        inspectedCompiled.rightPreview.forEach(constraint => {
+          if ((previewCounts.get(constraint.colorValue) || 0) !== constraint.count) {
+            errors.push(createIssue(
+              'constraint_conflict',
+              'right_preview_missed',
+              `Color ${String(constraint.colorValue)} has the wrong right preview count`,
+              {
+                vehicleId: constraint.vehicleId,
+                colorValue: constraint.colorValue,
+                expected: constraint.count,
+                actual: previewCounts.get(constraint.colorValue) || 0,
+                hint: 'repair_right_preview'
+              }
+            ));
+          }
+        });
+      }
+      if (inspectedTrace.initial.right.length < 10) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'right_queue_shorter_than_ten',
+          'Initial right queue must contain at least ten passengers'
+        ));
+      }
+
+      if (inspectedTrace.remainingVehicleIds.length > 0
+        || inspectedTrace.finalSlots.some(slot => slot !== null)
+        || inspectedTrace.finalBelt.length > 0
+        || inspectedTrace.finalLeft.length > 0
+        || inspectedTrace.finalRight.length > 0) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'final_state_not_clear',
+          'The correct path did not clear every vehicle and passenger',
+          { hint: 'move_color_earlier' }
+        ));
+      }
+    }
+
+    const hasCanonicalPrimaryErrors = canonicalCompiledIssues.issues.length > 0
+      || canonicalTraceIssues.issues.length > 0
+      || base.errors.length > 0;
+    if (!modelStructureValid
+      || !compiledStructureValid
+      || !traceStructureValid
+      || !compiledMatchesCanonical
+      || !traceMatchesCanonical
+      || hasCanonicalPrimaryErrors) {
+      return verifierResult(errors, trace, pressureProof, occupyProof, pressureCurve);
+    }
 
     path.forEach((vehicleId, index) => {
       const step = index + 1;
@@ -2095,45 +2278,7 @@
       });
     });
 
-    const previewCounts = countValues(inspectedTrace.initial.right.slice(0, 10));
-    inspectedCompiled.rightPreview.forEach(constraint => {
-      if ((previewCounts.get(constraint.colorValue) || 0) !== constraint.count) {
-        errors.push(createIssue(
-          'constraint_conflict',
-          'right_preview_missed',
-          `Color ${String(constraint.colorValue)} has the wrong right preview count`,
-          {
-            vehicleId: constraint.vehicleId,
-            colorValue: constraint.colorValue,
-            expected: constraint.count,
-            actual: previewCounts.get(constraint.colorValue) || 0,
-            hint: 'repair_right_preview'
-          }
-        ));
-      }
-    });
-    if (inspectedTrace.initial.right.length < 10) {
-      errors.push(createIssue(
-        'constraint_conflict',
-        'right_queue_shorter_than_ten',
-        'Initial right queue must contain at least ten passengers'
-      ));
-    }
-
-    if (inspectedTrace.remainingVehicleIds.length > 0
-      || inspectedTrace.finalSlots.some(slot => slot !== null)
-      || inspectedTrace.finalBelt.length > 0
-      || inspectedTrace.finalLeft.length > 0
-      || inspectedTrace.finalRight.length > 0) {
-      errors.push(createIssue(
-        'constraint_conflict',
-        'final_state_not_clear',
-        'The correct path did not clear every vehicle and passenger',
-        { hint: 'move_color_earlier' }
-      ));
-    }
-
-    return { errors, trace, pressureProof, occupyProof, pressureCurve };
+    return verifierResult(errors, trace, pressureProof, occupyProof, pressureCurve);
   }
 
   global.PressureQueueCore = Object.freeze({
