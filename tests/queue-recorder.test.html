@@ -206,7 +206,7 @@
 
     timeoutId = setTimeout(() => {
       failSuite('测试页执行超时', '生产页面加载回调未在限定时间内完成');
-    }, 3000);
+    }, 60000);
 
     const appFrame = document.querySelector('#app');
 
@@ -266,17 +266,396 @@
           element.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
         }
 
+        const waitForPressureCondition = (predicate, callback, attempts = 400) => {
+          if (predicate() || attempts <= 0) {
+            callback();
+            return;
+          }
+          appWindow.setTimeout(() => waitForPressureCondition(predicate, callback, attempts - 1), 0);
+        };
+
+        if (loadPhase === 'pressure-quality-async') {
+          const originalPressureCore = appWindow.PressureQueueCore;
+          const originalFileReader = appWindow.FileReader;
+          const nativeSetTimeout = appWindow.setTimeout.bind(appWindow);
+          const nativeClearTimeout = appWindow.clearTimeout.bind(appWindow);
+          const nativeRequestAnimationFrame = appWindow.requestAnimationFrame;
+          const nativeCancelAnimationFrame = appWindow.cancelAnimationFrame;
+          const qualityUnhandled = [];
+          const pendingReaders = [];
+
+          const onQualityUnhandled = event => {
+            event.preventDefault();
+            qualityUnhandled.push(event.reason);
+          };
+          appWindow.addEventListener('unhandledrejection', onQualityUnhandled);
+
+          class ControlledPressureFileReader {
+            constructor() {
+              this.result = null;
+              this.error = null;
+              this.listeners = { load: [], error: [] };
+            }
+
+            addEventListener(type, listener) {
+              if (this.listeners[type]) this.listeners[type].push(listener);
+            }
+
+            readAsText(file) {
+              this.file = file;
+              pendingReaders.push(this);
+            }
+
+            resolve(text) {
+              this.result = text;
+              this.listeners.load.forEach(listener => listener(new appWindow.Event('load')));
+            }
+
+            reject(message) {
+              this.error = new appWindow.Error(message);
+              this.listeners.error.forEach(listener => listener(new appWindow.Event('error')));
+            }
+          }
+
+          const waitForQualityCondition = async (predicate, attempts = 400) => {
+            for (let attempt = 0; attempt < attempts; attempt += 1) {
+              if (predicate()) return true;
+              await new Promise(resolve => nativeSetTimeout(resolve, 0));
+            }
+            return predicate();
+          };
+
+          const nextQualityTurn = () => new Promise(resolve => nativeSetTimeout(resolve, 0));
+
+          const resetQualityWorkspace = (overrides = {}) => {
+            const base = core.createInitialState();
+            qualityUnhandled.length = 0;
+            return app.updateState({
+              ...base,
+              activeStage: 'pressureQueue',
+              pressureQueue: makePressureWorkspaceSlice({
+                levelName: '质量审查线路',
+                annotations: [
+                  originalPressureCore.createAnnotation(1),
+                  originalPressureCore.createAnnotation(2),
+                  originalPressureCore.createAnnotation(3)
+                ],
+                ...overrides
+              })
+            });
+          };
+
+          const installQualitySession = createSearchSession => {
+            appWindow.PressureQueueCore = Object.freeze({
+              ...originalPressureCore,
+              createSearchSession
+            });
+          };
+
+          const assertStructuredPressureFailure = label => {
+            const result = app.getState().pressureQueue.result;
+            assert(result && result.status !== 'success' && result.status !== 'running', `${label} 未存储结构化非成功终态`);
+            equal(result.layout, null, `${label} 未清空不可信 layout`);
+            assert(Array.isArray(result.errors) && result.errors.length > 0, `${label} 未保存结构化错误`);
+            equal(JSON.parse(JSON.stringify(result)), result, `${label} 终态不能稳定 JSON 往返`);
+            equal(JSON.parse(localStorage.getItem(STORAGE_KEY)).pressureQueue.result, result, `${label} 终态未安全持久化`);
+            const runButton = appDocument.querySelector('[data-action="run-pressure-queue"]');
+            const cancelButton = appDocument.querySelector('[data-action="cancel-pressure-queue"]');
+            assert(runButton && !runButton.disabled, `${label} 后运行按钮未恢复`);
+            assert(cancelButton && cancelButton.disabled, `${label} 后取消按钮未恢复`);
+            assert(!appDocument.querySelector('#pressureQueueProgress').textContent.includes('搜索中'), `${label} 后仍停留在运行状态`);
+          };
+
+          const beginControlledImport = filename => {
+            const fileInput = appDocument.querySelector('#pressureQueueVehicleCsvFile');
+            const file = new appWindow.File([filename], filename, { type: 'text/tab-separated-values' });
+            Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+            dispatchChange(fileInput);
+            return pendingReaders.at(-1);
+          };
+
+          void (async () => {
+            try {
+              resetQualityWorkspace();
+              installQualitySession(() => ({
+                advance: () => ({
+                  status: 'success',
+                  layout: null,
+                  verification: { errors: [{ category: 'constraint_conflict', code: 'forged', message: 'forged failure' }] },
+                  errors: [],
+                  expanded: 1,
+                  budget: 64
+                })
+              }));
+              appDocument.querySelector('[data-action="run-pressure-queue"]').click();
+              await waitForQualityCondition(() => Boolean(app.getState().pressureQueue.result));
+              test('声明 success 但 layout 为空或 verification 含错时拒绝成功终态', () => {
+                assertStructuredPressureFailure('空布局伪成功');
+                assert(!appDocument.querySelector('#pressureQueueProgress').textContent.includes('生成成功'), '空布局伪成功仍显示成功');
+              });
+
+              resetQualityWorkspace();
+              installQualitySession(() => ({
+                advance: () => ({
+                  status: 'success',
+                  layout: { belt: [99, 99, 99, 99], left: [], right: [] },
+                  verification: { errors: [] },
+                  errors: [],
+                  expanded: 1,
+                  budget: 64
+                })
+              }));
+              appDocument.querySelector('[data-action="run-pressure-queue"]').click();
+              await waitForQualityCondition(() => Boolean(app.getState().pressureQueue.result));
+              test('独立严格验证拒绝声明 verification 无错但布局伪造的 success', () => {
+                assertStructuredPressureFailure('伪造布局成功');
+              });
+
+              resetQualityWorkspace();
+              installQualitySession(() => {
+                throw new appWindow.Error('session constructor boom');
+              });
+              appDocument.querySelector('[data-action="run-pressure-queue"]').click();
+              await waitForQualityCondition(() => Boolean(app.getState().pressureQueue.result) || qualityUnhandled.length > 0);
+              test('createSearchSession 抛错时安全收敛且恢复运行控制', () => {
+                equal(qualityUnhandled, [], 'createSearchSession 抛错产生未处理 Promise rejection');
+                assertStructuredPressureFailure('会话创建异常');
+              });
+
+              resetQualityWorkspace();
+              let throwingAdvanceCount = 0;
+              installQualitySession(() => ({
+                advance() {
+                  throwingAdvanceCount += 1;
+                  if (throwingAdvanceCount === 1) {
+                    return { status: 'running', layout: null, errors: [], expanded: 1, budget: 64, frontier: 1 };
+                  }
+                  throw new appWindow.Error('advance boom');
+                }
+              }));
+              appDocument.querySelector('[data-action="run-pressure-queue"]').click();
+              await waitForQualityCondition(() => Boolean(app.getState().pressureQueue.result) || qualityUnhandled.length > 0);
+              test('advance 在协作让出后抛错时安全收敛且不滞留运行态', () => {
+                equal(throwingAdvanceCount, 2, 'advance 抛错场景未跨过一次协作让出');
+                equal(qualityUnhandled, [], 'advance 抛错产生未处理 Promise rejection');
+                assertStructuredPressureFailure('推进异常');
+              });
+
+              resetQualityWorkspace();
+              installQualitySession(() => ({ advance: () => null }));
+              appDocument.querySelector('[data-action="run-pressure-queue"]').click();
+              await waitForQualityCondition(() => Boolean(app.getState().pressureQueue.result) || qualityUnhandled.length > 0);
+              test('空或畸形 advance 结果被拒绝为结构化非成功终态', () => {
+                equal(qualityUnhandled, [], '畸形 advance 结果产生未处理 Promise rejection');
+                assertStructuredPressureFailure('畸形推进结果');
+              });
+
+              resetQualityWorkspace();
+              installQualitySession(() => ({
+                advance: () => ({
+                  status: 'mystery_status',
+                  layout: { belt: [1], left: [], right: [] },
+                  errors: [],
+                  expanded: 1,
+                  budget: 64,
+                  unsafe() {}
+                })
+              }));
+              appDocument.querySelector('[data-action="run-pressure-queue"]').click();
+              await waitForQualityCondition(() => Boolean(app.getState().pressureQueue.result) || qualityUnhandled.length > 0);
+              test('未知状态与非 JSON 安全终态被拒绝且不污染持久化', () => {
+                equal(qualityUnhandled, [], '未知非 JSON 终态产生未处理 Promise rejection');
+                assertStructuredPressureFailure('未知非 JSON 终态');
+              });
+
+              appWindow.PressureQueueCore = originalPressureCore;
+              appWindow.FileReader = ControlledPressureFileReader;
+
+              const importAnnotations = [
+                { ...originalPressureCore.createAnnotation(1), initialOccupy: { mode: 'medium', count: null, duration: null } },
+                originalPressureCore.createAnnotation(2),
+                originalPressureCore.createAnnotation(3)
+              ];
+              resetQualityWorkspace({ levelName: '导入前线路', annotations: importAnnotations });
+              const pendingEditReader = beginControlledImport('pending-edit.tsv');
+              const editedLevel = appDocument.querySelector('[data-pressure-field="levelName"]');
+              editedLevel.value = '导入等待期间的新线路';
+              editedLevel.dispatchEvent(new appWindow.Event('input', { bubbles: true }));
+              dispatchChange(editedLevel);
+              const pendingEditTable = '车辆id\t车颜色\t车座位\t深度\n9\t1\t4\t0';
+              pendingEditReader.resolve(pendingEditTable);
+              await waitForQualityCondition(() => app.getState().pressureQueue.vehicleTableText === pendingEditTable);
+              test('文件导入完成仅补丁车辆表并保留等待期间的最新字段与标注', () => {
+                equal(app.getState().pressureQueue.levelName, '导入等待期间的新线路', '迟到导入覆盖了等待期间的字段编辑');
+                equal(app.getState().pressureQueue.annotations, importAnnotations, '迟到导入改写了已有标注');
+                equal(app.getState().pressureQueue.vehicleTableText, pendingEditTable, '迟到导入未写入车辆表');
+              });
+
+              resetQualityWorkspace({ levelName: '双导入线路', annotations: importAnnotations });
+              const olderReader = beginControlledImport('older.tsv');
+              const newerReader = beginControlledImport('newer.tsv');
+              const newerTable = '车辆id\t车颜色\t车座位\t深度\n22\t1\t4\t0';
+              const olderTable = '车辆id\t车颜色\t车座位\t深度\n11\t1\t4\t0';
+              newerReader.resolve(newerTable);
+              await waitForQualityCondition(() => app.getState().pressureQueue.vehicleTableText === newerTable);
+              olderReader.resolve(olderTable);
+              await nextQualityTurn();
+              await nextQualityTurn();
+              test('两个文件导入乱序完成时仅最新请求生效', () => {
+                equal(app.getState().pressureQueue.vehicleTableText, newerTable, '旧导入迟到后覆盖了最新车辆表');
+                equal(app.getState().pressureQueue.annotations, importAnnotations, '乱序导入改写了已有标注');
+              });
+
+              resetQualityWorkspace({ levelName: '清空竞态线路', annotations: importAnnotations });
+              const clearRaceReader = beginControlledImport('clear-race.tsv');
+              appDocument.querySelector('[data-action="clear-pressure-queue"]').click();
+              clearRaceReader.resolve('车辆id\t车颜色\t车座位\t深度\n33\t1\t4\t0');
+              await nextQualityTurn();
+              await nextQualityTurn();
+              test('清空期间迟到的文件导入不能复活车辆表或压力状态', () => {
+                equal(app.getState().pressureQueue, core.createInitialState().pressureQueue, '清空后迟到导入复活了压力状态');
+                equal(JSON.parse(localStorage.getItem(STORAGE_KEY)).pressureQueue, core.createInitialState().pressureQueue, '清空后迟到导入污染了持久化状态');
+              });
+
+              resetQualityWorkspace({ levelName: '拒绝竞态线路', annotations: importAnnotations });
+              const staleRejectReader = beginControlledImport('stale-reject.tsv');
+              const winningReader = beginControlledImport('winning.tsv');
+              const winningTable = '车辆id\t车颜色\t车座位\t深度\n44\t1\t4\t0';
+              winningReader.resolve(winningTable);
+              await waitForQualityCondition(() => app.getState().pressureQueue.vehicleTableText === winningTable);
+              staleRejectReader.reject('stale import failed');
+              await nextQualityTurn();
+              await nextQualityTurn();
+              test('旧导入拒绝不覆盖最新成功导入或当前输入标注', () => {
+                equal(app.getState().pressureQueue.vehicleTableText, winningTable, '旧导入拒绝覆盖了最新车辆表');
+                equal(app.getState().pressureQueue.levelName, '拒绝竞态线路', '旧导入拒绝改写了当前输入');
+                equal(app.getState().pressureQueue.annotations, importAnnotations, '旧导入拒绝改写了当前标注');
+                assert(!app.getState().pressureQueue.errors.some(error => error.includes('stale import failed')), '旧导入拒绝写入了陈旧错误');
+              });
+
+              resetQualityWorkspace({ levelName: '当前拒绝线路', annotations: importAnnotations });
+              const currentRejectReader = beginControlledImport('current-reject.tsv');
+              currentRejectReader.reject('current import failed');
+              await waitForQualityCondition(() => app.getState().pressureQueue.errors.some(error => error.includes('current import failed')));
+              test('当前文件导入拒绝仅写入错误并保留输入标注', () => {
+                equal(app.getState().pressureQueue.levelName, '当前拒绝线路', '当前导入拒绝改写了输入');
+                equal(app.getState().pressureQueue.annotations, importAnnotations, '当前导入拒绝改写了标注');
+                assert(app.getState().pressureQueue.errors.some(error => error.includes('current import failed')), '当前导入拒绝未显示错误');
+              });
+
+              appWindow.FileReader = originalFileReader;
+
+              resetQualityWorkspace();
+              let visibleAdvanceCount = 0;
+              installQualitySession(() => ({
+                advance() {
+                  visibleAdvanceCount += 1;
+                  return visibleAdvanceCount === 1
+                    ? { status: 'running', layout: null, errors: [], expanded: 1, budget: 64, frontier: 1 }
+                    : { status: 'budget_exhausted', layout: null, errors: [], expanded: 2, budget: 64, frontier: 0 };
+                }
+              }));
+              let visibleRafCalls = 0;
+              const visibleWatchdogDelays = [];
+              const canceledVisibleWatchdogs = [];
+              let queuedVisibleFrame = null;
+              appWindow.requestAnimationFrame = callback => {
+                visibleRafCalls += 1;
+                queuedVisibleFrame = callback;
+                return 701;
+              };
+              appWindow.cancelAnimationFrame = () => {};
+              appWindow.setTimeout = (callback, delay, ...args) => {
+                visibleWatchdogDelays.push(delay);
+                return 702;
+              };
+              appWindow.clearTimeout = timerId => {
+                canceledVisibleWatchdogs.push(timerId);
+              };
+              appDocument.querySelector('[data-action="run-pressure-queue"]').click();
+              test('rAF 可用时协作让出使用有意义的 watchdog 延迟而非零延时竞争', () => {
+                equal(visibleRafCalls, 1, '可见文档未请求 animation frame');
+                assert(visibleWatchdogDelays.length <= 1, '单次协作让出安排了多个 watchdog');
+                assert(visibleWatchdogDelays.every(delay => delay >= 50), `rAF 可用时 watchdog 延迟错误：${visibleWatchdogDelays.join(',')}`);
+              });
+              if (queuedVisibleFrame) queuedVisibleFrame(16);
+              appWindow.requestAnimationFrame = nativeRequestAnimationFrame;
+              appWindow.cancelAnimationFrame = nativeCancelAnimationFrame;
+              appWindow.setTimeout = nativeSetTimeout;
+              appWindow.clearTimeout = nativeClearTimeout;
+              await waitForQualityCondition(() => Boolean(app.getState().pressureQueue.result));
+              test('释放 rAF 后取消 watchdog 并完成协作搜索', () => {
+                if (visibleWatchdogDelays.length > 0) {
+                  assert(canceledVisibleWatchdogs.includes(702), 'rAF 获胜后未取消 watchdog');
+                }
+                equal(visibleAdvanceCount, 2, '释放 rAF 后未继续下一批搜索');
+              });
+
+              resetQualityWorkspace();
+              let fallbackAdvanceCount = 0;
+              installQualitySession(() => ({
+                advance() {
+                  fallbackAdvanceCount += 1;
+                  return fallbackAdvanceCount === 1
+                    ? { status: 'running', layout: null, errors: [], expanded: 1, budget: 64, frontier: 1 }
+                    : { status: 'budget_exhausted', layout: null, errors: [], expanded: 2, budget: 64, frontier: 0 };
+                }
+              }));
+              let fallbackZeroTimeoutCalls = 0;
+              appWindow.requestAnimationFrame = undefined;
+              appWindow.setTimeout = (callback, delay, ...args) => {
+                if (delay === 0) fallbackZeroTimeoutCalls += 1;
+                return nativeSetTimeout(callback, delay, ...args);
+              };
+              appDocument.querySelector('[data-action="run-pressure-queue"]').click();
+              appWindow.requestAnimationFrame = nativeRequestAnimationFrame;
+              appWindow.setTimeout = nativeSetTimeout;
+              appWindow.clearTimeout = nativeClearTimeout;
+              await waitForQualityCondition(() => Boolean(app.getState().pressureQueue.result));
+              test('requestAnimationFrame 不可用时零延时回退仍完成协作搜索', () => {
+                assert(fallbackZeroTimeoutCalls >= 1, 'rAF 不可用时未安排 setTimeout(0) 回退');
+                equal(fallbackAdvanceCount, 2, 'rAF 不可用时协作搜索未完成后续批次');
+                equal(app.getState().pressureQueue.result.status, 'budget_exhausted', 'rAF 不可用时未保存终态');
+              });
+            } catch (error) {
+              failSuite('压力队列质量回归阶段异常', error);
+              return;
+            } finally {
+              appWindow.PressureQueueCore = originalPressureCore;
+              appWindow.FileReader = originalFileReader;
+              appWindow.requestAnimationFrame = nativeRequestAnimationFrame;
+              appWindow.cancelAnimationFrame = nativeCancelAnimationFrame;
+              appWindow.setTimeout = nativeSetTimeout;
+              appWindow.clearTimeout = nativeClearTimeout;
+              appWindow.removeEventListener('unhandledrejection', onQualityUnhandled);
+            }
+
+            const cooperativeBase = core.createInitialState();
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({
+              ...cooperativeBase,
+              activeStage: 'pressureQueue',
+              pressureQueue: makePressureWorkspaceSlice({
+                levelName: '异步线路',
+                annotations: [
+                  originalPressureCore.createAnnotation(1),
+                  originalPressureCore.createAnnotation(2),
+                  originalPressureCore.createAnnotation(3)
+                ]
+              })
+            }));
+            loadPhase = 'pressure-cooperative';
+            appWindow.location.reload();
+          })();
+          return;
+        }
+
         if (loadPhase === 'pressure-cooperative') {
           const originalPressureCore = appWindow.PressureQueueCore;
+          const cooperativeNativeSetTimeout = appWindow.setTimeout.bind(appWindow);
+          const cooperativeNativeRequestAnimationFrame = appWindow.requestAnimationFrame;
+          const cooperativeNativeCancelAnimationFrame = appWindow.cancelAnimationFrame;
           const advanceLimits = [];
           let sessionMode = 'success';
-          const waitForPressureCondition = (predicate, callback, attempts = 200) => {
-            if (predicate() || attempts <= 0) {
-              callback();
-              return;
-            }
-            appWindow.setTimeout(() => waitForPressureCondition(predicate, callback, attempts - 1), 0);
-          };
           appWindow.PressureQueueCore = Object.freeze({
             ...originalPressureCore,
             createSearchSession() {
@@ -286,17 +665,21 @@
                   advanceLimits.push(limit);
                   batch += 1;
                   if (sessionMode === 'cancel') {
-                    return { status: 'running', expanded: batch * 256, budget: 4096, frontier: 2, errors: [] };
+                    return { status: 'running', layout: null, expanded: batch * 256, budget: 4096, frontier: 2, errors: [] };
                   }
                   if (sessionMode === 'budget') {
                     return { status: 'budget_exhausted', layout: null, expanded: 64, budget: 64, frontier: 0, errors: [] };
                   }
                   if (batch < 3) {
-                    return { status: 'running', expanded: batch * 256, budget: 768, frontier: 4 - batch, errors: [] };
+                    return { status: 'running', layout: null, expanded: batch * 256, budget: 768, frontier: 4 - batch, errors: [] };
                   }
                   return {
                     status: 'success',
-                    layout: { belt: [1, 1, 1, 1], left: [], right: [] },
+                    layout: {
+                      belt: [1, 1, 1, 1],
+                      left: [],
+                      right: [2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+                    },
                     verification: { errors: [] },
                     errors: [],
                     expanded: 600,
@@ -323,15 +706,37 @@
             });
 
             sessionMode = 'cancel';
+            let queuedCancelFrame = null;
+            let queuedCancelFallback = null;
+            appWindow.requestAnimationFrame = callback => {
+              queuedCancelFrame = callback;
+              return 901;
+            };
+            appWindow.cancelAnimationFrame = () => {};
+            appWindow.setTimeout = (callback, delay, ...args) => {
+              if (delay === 0) {
+                queuedCancelFallback = callback;
+                return 902;
+              }
+              return cooperativeNativeSetTimeout(callback, delay, ...args);
+            };
             appDocument.querySelector('[data-action="run-pressure-queue"]').click();
             appDocument.querySelector('[data-action="cancel-pressure-queue"]').click();
             const stateAfterCancel = clone(app.getState().pressureQueue);
-            waitForPressureCondition(() => appDocument.querySelector('#pressureQueueProgress').textContent.includes('已取消'), () => {
+            const releaseCancelContinuation = queuedCancelFrame || queuedCancelFallback;
+            if (releaseCancelContinuation) releaseCancelContinuation(16);
+            appWindow.requestAnimationFrame = cooperativeNativeRequestAnimationFrame;
+            appWindow.cancelAnimationFrame = cooperativeNativeCancelAnimationFrame;
+            appWindow.setTimeout = cooperativeNativeSetTimeout;
+            let cancelContinuationReleased = false;
+            cooperativeNativeSetTimeout(() => { cancelContinuationReleased = true; }, 0);
+            waitForPressureCondition(() => cancelContinuationReleased, () => {
               test('取消与陈旧 token 阻止晚到结果覆盖并保留输入标注', () => {
                 equal(app.getState().pressureQueue, stateAfterCancel, '取消后的陈旧 Promise 覆盖了安全状态');
                 equal(app.getState().pressureQueue.levelName, '异步线路', '取消搜索丢失输入');
                 equal(app.getState().pressureQueue.annotations.map(item => item.vehicleId), [1, 2, 3], '取消搜索丢失标注');
                 assert(appDocument.querySelector('#pressureQueueProgress').textContent.includes('已取消'), '取消状态标签缺失');
+                equal(advanceLimits.length, 4, '取消后释放陈旧 continuation 又执行了搜索批次');
               });
 
               const budgetInput = appDocument.querySelector('[data-pressure-field="searchBudget"]');
@@ -340,6 +745,7 @@
               appDocument.querySelector('[data-action="run-pressure-queue"]').click();
               test('输入错误作为独立终态存储且不渲染报告或队列控制', () => {
                 equal(app.getState().pressureQueue.result.status, 'input_error', '输入错误终态未存储');
+                equal(JSON.parse(JSON.stringify(app.getState().pressureQueue.result)), app.getState().pressureQueue.result, '输入错误终态不能稳定 JSON 往返');
                 assert(appDocument.querySelector('#pressureQueueErrors').textContent.includes('输入错误'), '输入错误未区别渲染');
                 assert(!appDocument.querySelector('[data-action*="pressure"][data-action*="copy"], [data-action*="pressure"][data-action*="download"]'), '输入错误时出现 Task 9 控制');
               });
@@ -361,6 +767,7 @@
               appDocument.querySelector('[data-action="run-pressure-queue"]').click();
               test('静态约束冲突作为独立终态存储且不启动搜索', () => {
                 equal(app.getState().pressureQueue.result.status, 'constraint_conflict', '静态约束冲突终态未存储');
+                equal(JSON.parse(JSON.stringify(app.getState().pressureQueue.result)), app.getState().pressureQueue.result, '约束冲突终态不能稳定 JSON 往返');
                 assert(appDocument.querySelector('#pressureQueueErrors').textContent.includes('约束冲突'), '约束冲突未区别渲染');
               });
 
@@ -381,6 +788,7 @@
               waitForPressureCondition(() => Boolean(app.getState().pressureQueue.result), () => {
                 test('预算耗尽作为独立终态存储并显示确定进度', () => {
                   equal(app.getState().pressureQueue.result.status, 'budget_exhausted', '预算耗尽终态未存储');
+                  equal(JSON.parse(JSON.stringify(app.getState().pressureQueue.result)), app.getState().pressureQueue.result, '预算耗尽终态不能稳定 JSON 往返');
                   assert(appDocument.querySelector('#pressureQueueErrors').textContent.includes('预算耗尽'), '预算耗尽未区别渲染');
                   const progress = appDocument.querySelector('#pressureQueueProgress progress');
                   assert(progress && Number(progress.value) === 64 && Number(progress.max) === 64, '预算耗尽未渲染确定进度');
@@ -418,6 +826,14 @@
                       equal(app.getState().pressureQueue.result.status, 'success', '真实小模型未通过 UI runner 生成成功');
                       equal(app.getState().pressureQueue.result.layout.belt, [1, 1, 1, 1], '真实小模型生成传送带错误');
                       equal(app.getState().pressureQueue.errors, [], '真实小模型生成不应保存错误');
+                      const parsed = core.parsePressureQueueModel(app.getState());
+                      const strict = originalPressureCore.verify(
+                        parsed.model,
+                        originalPressureCore.compileConstraints(parsed.model),
+                        app.getState().pressureQueue.result.layout
+                      );
+                      equal(app.getState().pressureQueue.result.verification, strict, '真实成功未保存独立严格验证的规范结果');
+                      equal(JSON.parse(JSON.stringify(app.getState().pressureQueue.result)), app.getState().pressureQueue.result, '成功终态不能稳定 JSON 往返');
                     });
 
                     const restoreRightState = {
@@ -3196,6 +3612,83 @@
           assert(appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="1"] [data-tag-toggle="initialOccupy"]').checked, '导航往返后卡片状态未恢复');
         });
 
+        test('预算与种子输入错误运行时完整保留已有标注及持久化副本', () => {
+          showPressureWorkspace();
+          appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
+          appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="2"] [data-tag-toggle="rightPreview"]').click();
+          const expectedAnnotations = clone(app.getState().pressureQueue.annotations);
+
+          let budget = appDocument.querySelector('[data-pressure-field="searchBudget"]');
+          budget.value = '0';
+          dispatchChange(budget);
+          const seed = appDocument.querySelector('[data-pressure-field="seed"]');
+          seed.value = '-1';
+          dispatchChange(seed);
+          appDocument.querySelector('[data-action="run-pressure-queue"]').click();
+
+          equal(app.getState().pressureQueue.result.status, 'input_error', '前置条件：非法预算/种子未生成 input_error');
+          equal(app.getState().pressureQueue.annotations, expectedAnnotations, '输入错误运行清空或改写了已有标注');
+          equal(JSON.parse(localStorage.getItem(STORAGE_KEY)).pressureQueue.annotations, expectedAnnotations, '输入错误运行清空或改写了持久化标注');
+        });
+
+        showPressureWorkspace();
+        appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
+        appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="2"] [data-tag-toggle="rightPreview"]').click();
+        const vehicleRepairExpectedAnnotations = clone(app.getState().pressureQueue.annotations);
+        const validPressureVehicleTable = app.getState().pressureQueue.vehicleTableText;
+        const damagedVehicleTable = appDocument.querySelector('[data-pressure-field="vehicleTableText"]');
+        damagedVehicleTable.value = '车辆表临时损坏';
+        dispatchChange(damagedVehicleTable);
+        appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
+        const damagedVehicleErrors = clone(app.getState().pressureQueue.errors);
+        const annotationsDuringVehicleDamage = clone(app.getState().pressureQueue.annotations);
+        const storedAnnotationsDuringVehicleDamage = clone(JSON.parse(localStorage.getItem(STORAGE_KEY)).pressureQueue.annotations);
+        const repairedVehicleTable = appDocument.querySelector('[data-pressure-field="vehicleTableText"]');
+        repairedVehicleTable.value = validPressureVehicleTable;
+        dispatchChange(repairedVehicleTable);
+        appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
+        const annotationsAfterVehicleRepair = clone(app.getState().pressureQueue.annotations);
+        const vehicleRepairCardRestored = Boolean(appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="2"] [data-tag-toggle="rightPreview"]:checked'));
+
+        test('临时损坏车辆表准备标注时显示错误但不删除已有标注', () => {
+          assert(damagedVehicleErrors.length > 0, '损坏车辆表准备后未显示解析错误');
+          equal(annotationsDuringVehicleDamage, vehicleRepairExpectedAnnotations, '损坏车辆表准备删除了已有标注');
+          equal(storedAnnotationsDuringVehicleDamage, vehicleRepairExpectedAnnotations, '损坏车辆表准备删除了持久化标注');
+        });
+
+        test('修复临时损坏的车辆表后恢复原有卡片与标注', () => {
+          equal(annotationsAfterVehicleRepair, vehicleRepairExpectedAnnotations, '修复车辆表后未恢复原有标注');
+          assert(vehicleRepairCardRestored, '修复车辆表后卡片未恢复原有标注');
+        });
+
+        showPressureWorkspace();
+        appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
+        appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="1"] [data-tag-toggle="initialOccupy"]').click();
+        const pathRepairExpectedAnnotations = clone(app.getState().pressureQueue.annotations);
+        const validPressurePath = app.getState().pressureQueue.clickSequenceText;
+        const damagedPath = appDocument.querySelector('[data-pressure-field="clickSequenceText"]');
+        damagedPath.value = '1,99,3';
+        dispatchChange(damagedPath);
+        appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
+        const damagedPathErrors = clone(app.getState().pressureQueue.errors);
+        const annotationsDuringPathDamage = clone(app.getState().pressureQueue.annotations);
+        const repairedPath = appDocument.querySelector('[data-pressure-field="clickSequenceText"]');
+        repairedPath.value = validPressurePath;
+        dispatchChange(repairedPath);
+        appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
+        const annotationsAfterPathRepair = clone(app.getState().pressureQueue.annotations);
+        const pathRepairCardRestored = Boolean(appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="1"] [data-tag-toggle="initialOccupy"]:checked'));
+
+        test('临时损坏路径准备标注时显示错误但不删除已有标注', () => {
+          assert(damagedPathErrors.length > 0, '损坏路径准备后未显示解析错误');
+          equal(annotationsDuringPathDamage, pathRepairExpectedAnnotations, '损坏路径准备删除了已有标注');
+        });
+
+        test('修复临时损坏的路径后恢复原有卡片与标注', () => {
+          equal(annotationsAfterPathRepair, pathRepairExpectedAnnotations, '修复路径后未恢复原有标注');
+          assert(pathRepairCardRestored, '修复路径后卡片未恢复原有标注');
+        });
+
         test('部分结算与自定义强度编辑器保留可验证边界冲突', () => {
           showPressureWorkspace();
           appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
@@ -3287,6 +3780,178 @@
           appDocument.querySelector('[data-action="run-pressure-queue"]').click();
           appWindow.PressureQueueCore = originalCore;
           equal(sessionStarts, 0, '静态冲突仍启动了搜索会话');
+        });
+
+        test('初始占带总量冲突筛选显示全部参与车辆及身份上下文', () => {
+          const annotations = [1, 2, 3].map(vehicleId => ({
+            ...pressureCore.createAnnotation(vehicleId),
+            initialOccupy: { mode: 'medium', count: null, duration: null }
+          }));
+          showPressureWorkspace({ annotations });
+          appDocument.querySelector('[data-pressure-filter="conflicts"]').click();
+          const visibleIds = [...appDocument.querySelectorAll('.pressure-vehicle-card:not([hidden])')]
+            .map(card => Number(card.dataset.vehicleId));
+          equal(visibleIds, [1, 2, 3], '初始占带总量冲突筛选未显示全部参与车辆');
+          [1, 2, 3].forEach((vehicleId, index) => {
+            const card = appDocument.querySelector(`.pressure-vehicle-card[data-vehicle-id="${vehicleId}"]`);
+            assert(card.classList.contains('has-conflict'), `车辆 #${vehicleId} 未标记为总量冲突`);
+            assert(card.querySelector('.pressure-conflict-chip'), `车辆 #${vehicleId} 缺少冲突芯片`);
+            const errors = appDocument.querySelector('#pressureQueueErrors').textContent;
+            assert(errors.includes(`#${vehicleId}`) && errors.includes(`第 ${index + 1} 步`), `总量冲突缺少车辆 #${vehicleId} 的步骤上下文`);
+          });
+        });
+
+        test('三个同色不兼容初始标签全部进入冲突筛选并保留步骤身份', () => {
+          const annotations = [1, 2, 3].map((vehicleId, index) => ({
+            ...pressureCore.createAnnotation(vehicleId),
+            initialOccupy: { mode: 'custom', count: index + 1, duration: 1 }
+          }));
+          showPressureWorkspace({
+            passengerQueueText: Array(20).fill('1').join(','),
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t1\t4\t0\t\t',
+              '2\t1\t6\t0\t\t',
+              '3\t1\t10\t0\t\t'
+            ].join('\n'),
+            annotations
+          });
+          appDocument.querySelector('[data-pressure-filter="conflicts"]').click();
+          const visibleIds = [...appDocument.querySelectorAll('.pressure-vehicle-card:not([hidden])')]
+            .map(card => Number(card.dataset.vehicleId));
+          equal(visibleIds, [1, 2, 3], '第三个同色初始标签未进入冲突筛选');
+          [1, 2, 3].forEach((vehicleId, index) => {
+            const card = appDocument.querySelector(`.pressure-vehicle-card[data-vehicle-id="${vehicleId}"]`);
+            assert(card.classList.contains('has-conflict') && card.querySelector('.pressure-conflict-chip'), `同色初始冲突未标记车辆 #${vehicleId}`);
+            const errors = appDocument.querySelector('#pressureQueueErrors').textContent;
+            assert(errors.includes(`#${vehicleId}`) && errors.includes(`第 ${index + 1} 步`), `同色初始冲突缺少车辆 #${vehicleId} 的步骤上下文`);
+          });
+        });
+
+        test('三个同色不兼容预告标签全部进入冲突筛选', () => {
+          const annotations = [1, 2, 3].map((vehicleId, index) => ({
+            ...pressureCore.createAnnotation(vehicleId),
+            rightPreview: { mode: 'custom', count: index + 1 }
+          }));
+          showPressureWorkspace({
+            passengerQueueText: Array(20).fill('1').join(','),
+            vehicleTableText: [
+              '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+              '1\t1\t4\t0\t\t',
+              '2\t1\t6\t0\t\t',
+              '3\t1\t10\t0\t\t'
+            ].join('\n'),
+            annotations
+          });
+          appDocument.querySelector('[data-pressure-filter="conflicts"]').click();
+          equal(
+            [...appDocument.querySelectorAll('.pressure-vehicle-card:not([hidden])')].map(card => Number(card.dataset.vehicleId)),
+            [1, 2, 3],
+            '第三个同色预告标签未进入冲突筛选'
+          );
+        });
+
+        test('标签筛选原位更新可见性并保持控制焦点与卡片 DOM 身份', () => {
+          showPressureWorkspace();
+          appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
+          appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="2"] [data-tag-toggle="rightPreview"]').click();
+          const unaffectedCard = appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="1"]');
+          const filter = appDocument.querySelector('[data-pressure-filter="preview"]');
+          filter.focus();
+          try {
+            filter.click();
+            assert(filter.isConnected && appDocument.activeElement === filter, '标签筛选替换了已聚焦控制或丢失焦点');
+            assert(appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="1"]') === unaffectedCard, '标签筛选替换了未受影响卡片 DOM');
+            equal([...appDocument.querySelectorAll('.pressure-vehicle-card:not([hidden])')].map(card => Number(card.dataset.vehicleId)), [2], '标签筛选未原位更新可见性');
+          } finally {
+            const allFilter = appDocument.querySelector('[data-pressure-filter="all"]');
+            if (allFilter) allFilter.click();
+          }
+        });
+
+        test('折叠普通车辆原位更新并保持控制焦点与已标注卡片身份', () => {
+          showPressureWorkspace();
+          appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
+          appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="2"] [data-tag-toggle="rightPreview"]').click();
+          const taggedCard = appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="2"]');
+          const collapse = appDocument.querySelector('[data-pressure-collapse-normal]');
+          collapse.focus();
+          try {
+            collapse.click();
+            assert(collapse.isConnected && appDocument.activeElement === collapse, '折叠普通车辆替换了已聚焦控制或丢失焦点');
+            assert(appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="2"]') === taggedCard, '折叠普通车辆替换了已标注卡片 DOM');
+            equal([...appDocument.querySelectorAll('.pressure-vehicle-card:not([hidden])')].map(card => Number(card.dataset.vehicleId)), [2], '折叠普通车辆未原位更新可见性');
+          } finally {
+            const currentCollapse = appDocument.querySelector('[data-pressure-collapse-normal]');
+            if (currentCollapse && currentCollapse.getAttribute('aria-pressed') === 'true') currentCollapse.click();
+          }
+        });
+
+        test('基础字段 change 持久化时保留输入 DOM、焦点与光标', () => {
+          showPressureWorkspace();
+          const field = appDocument.querySelector('[data-pressure-field="levelName"]');
+          field.value = '保留焦点线路';
+          field.focus();
+          field.setSelectionRange(2, 4);
+          field.dispatchEvent(new appWindow.Event('input', { bubbles: true }));
+          dispatchChange(field);
+          assert(field.isConnected && appDocument.querySelector('[data-pressure-field="levelName"]') === field, '基础字段 change 替换了输入 DOM');
+          assert(appDocument.activeElement === field, '基础字段 change 丢失焦点');
+          equal([field.selectionStart, field.selectionEnd], [2, 4], '基础字段 change 丢失光标选区');
+          equal(app.getState().pressureQueue.levelName, '保留焦点线路', '基础字段 change 未持久化最新值');
+        });
+
+        test('标注编辑原位更新并保留焦点、输入区及未受影响卡片身份', () => {
+          showPressureWorkspace();
+          appDocument.querySelector('[data-action="prepare-pressure-annotations"]').click();
+          const inputRegion = appDocument.querySelector('.pressure-input-panel');
+          const unaffectedCard = appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="3"]');
+          const settlement = appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="1"] [data-annotation-field="settlementTarget"]');
+          settlement.focus();
+          settlement.value = 'empty';
+          dispatchChange(settlement);
+          const replacementSettlement = appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="1"] [data-annotation-field="settlementTarget"]');
+          assert(replacementSettlement && appDocument.activeElement === replacementSettlement, '标注编辑后未聚焦对应替换控制');
+          assert(appDocument.querySelector('.pressure-input-panel') === inputRegion, '标注编辑替换了压力输入区');
+          assert(appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="3"]') === unaffectedCard, '标注编辑替换了未受影响卡片');
+          equal(app.getState().pressureQueue.annotations[0].settlementTarget, 'empty', '标注编辑未保存目标值');
+        });
+
+        let longPathIndexOfCalls = 0;
+        let longPathCardCount = 0;
+        let longPathFirstTriggerCount = 0;
+        const originalPressureArrayIndexOf = appWindow.Array.prototype.indexOf;
+        try {
+          appWindow.Array.prototype.indexOf = function instrumentedPressureIndexOf(...args) {
+            longPathIndexOfCalls += 1;
+            return Reflect.apply(originalPressureArrayIndexOf, this, args);
+          };
+          const vehicleIds = Array.from({ length: 80 }, (_, index) => index + 1);
+          const longPathBase = core.createInitialState();
+          app.updateState({
+            ...longPathBase,
+            activeStage: 'pressureQueue',
+            pressureQueue: makePressureWorkspaceSlice({
+              conveyorCapacity: '4',
+              passengerQueueText: Array(320).fill('1').join(','),
+              vehicleTableText: [
+                '车辆id\t车颜色\t车座位\t深度\t前方车辆id\t后方车辆id',
+                ...vehicleIds.map(vehicleId => `${vehicleId}\t1\t4\t0\t\t`)
+              ].join('\n'),
+              clickSequenceText: vehicleIds.join(','),
+              annotations: vehicleIds.map(vehicleId => pressureCore.createAnnotation(vehicleId))
+            })
+          });
+          longPathCardCount = appDocument.querySelectorAll('.pressure-vehicle-card').length;
+          longPathFirstTriggerCount = appDocument.querySelector('.pressure-vehicle-card[data-vehicle-id="1"] [data-annotation-field="releaseTriggerVehicleId"]').options.length;
+        } finally {
+          appWindow.Array.prototype.indexOf = originalPressureArrayIndexOf;
+        }
+
+        test('长路径渲染不在触发选项生成中重复执行 path.indexOf', () => {
+          equal(longPathCardCount, 80, '长路径未完整渲染 80 张卡片');
+          equal(longPathFirstTriggerCount, 80, '长路径首卡触发选项数量错误');
+          assert(longPathIndexOfCalls <= 80, `长路径渲染执行了 ${longPathIndexOfCalls} 次 indexOf，存在重复路径扫描`);
         });
 
         test('压力标签筛选与折叠只改变可见性并保持路径顺序', () => {
@@ -3772,7 +4437,7 @@
             ]
           })
         }));
-        loadPhase = 'pressure-cooperative';
+        loadPhase = 'pressure-quality-async';
         appWindow.location.reload();
       } catch (error) {
         failSuite('测试页脚本异常', error);

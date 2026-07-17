@@ -1925,7 +1925,9 @@
         ...currentState,
         pressureQueue: {
           ...currentState.pressureQueue,
-          annotations: parsed.errors.length === 0 ? parsed.model.annotations : [],
+          annotations: parsed.errors.length === 0
+            ? parsed.model.annotations
+            : currentState.pressureQueue.annotations,
           result: null,
           errors: parsed.errors.map(error => error.message)
         }
@@ -5448,6 +5450,7 @@
     let pathSolveRunToken = 0;
     let pressureQueueProgress = null;
     let pressureQueueRunToken = 0;
+    let pressureQueueImportToken = 0;
     let pressureQueueFilter = 'all';
     let pressureQueueCollapseNormal = false;
 
@@ -6547,32 +6550,80 @@
       parse_error: '输入解析失败'
     });
 
-    function getPressureVehicleContext(model, issue) {
-      const vehicleId = Number.isSafeInteger(issue && issue.vehicleId)
-        ? issue.vehicleId
-        : Number.isSafeInteger(issue && issue.firstVehicleId)
-          ? issue.firstVehicleId
-          : null;
-      const vehicle = vehicleId === null
-        ? null
-        : model.vehicles.find(item => item.id === vehicleId) || null;
-      const step = vehicleId === null ? null : model.path.indexOf(vehicleId) + 1;
-      const color = vehicle ? getColor(vehicle.colorValue) : null;
-      return { vehicleId, vehicle, step: step > 0 ? step : null, color };
+    function getPressureIssueParticipantIds(model, issue, stepById, vehiclesById) {
+      const participants = new Set();
+      const addId = value => {
+        if (Number.isSafeInteger(value) && stepById.has(value)) participants.add(value);
+      };
+      const directKeys = [
+        'vehicleId', 'firstVehicleId', 'secondVehicleId', 'triggerVehicleId',
+        'releaseTriggerVehicleId', 'sourceVehicleId', 'targetVehicleId', 'frontVehicleId'
+      ];
+      const arrayKeys = ['vehicleIds', 'triggerVehicleIds', 'blockerIds', 'involvedVehicleIds'];
+      directKeys.forEach(key => addId(issue && issue[key]));
+      arrayKeys.forEach(key => {
+        if (Array.isArray(issue && issue[key])) issue[key].forEach(addId);
+      });
+
+      const tagByConflictCode = {
+        initial_occupy_color_conflict: 'initialOccupy',
+        later_occupy_color_conflict: 'laterOccupy',
+        preview_color_conflict: 'rightPreview'
+      };
+      const aggregateTagByCode = {
+        initial_occupy_sum_exceeds_capacity: 'initialOccupy',
+        later_occupy_sum_exceeds_capacity: 'laterOccupy',
+        preview_sum_exceeds_ten: 'rightPreview'
+      };
+      const colorTag = tagByConflictCode[issue && issue.code];
+      const aggregateTag = aggregateTagByCode[issue && issue.code];
+      if (colorTag && Number.isSafeInteger(issue.colorValue)) {
+        model.annotations.forEach(annotation => {
+          const vehicle = vehiclesById.get(annotation.vehicleId);
+          if (annotation[colorTag] !== null && vehicle && vehicle.colorValue === issue.colorValue) {
+            addId(annotation.vehicleId);
+          }
+        });
+      }
+      if (aggregateTag) {
+        model.annotations.forEach(annotation => {
+          if (annotation[aggregateTag] !== null) addId(annotation.vehicleId);
+        });
+      }
+      return participants;
     }
 
-    function formatPressureIssue(model, issue) {
+    function createPressureIssueIndex(model, issues) {
+      const stepById = new Map(model.path.map((vehicleId, index) => [vehicleId, index + 1]));
+      const vehiclesById = new Map(model.vehicles.map(vehicle => [vehicle.id, vehicle]));
+      const issuesByVehicleId = new Map();
+      const conflictedIds = new Set();
+      const details = (Array.isArray(issues) ? issues : []).map(issue => {
+        const participantIds = getPressureIssueParticipantIds(model, issue, stepById, vehiclesById);
+        participantIds.forEach(vehicleId => {
+          conflictedIds.add(vehicleId);
+          const vehicleIssues = issuesByVehicleId.get(vehicleId) || [];
+          vehicleIssues.push(issue);
+          issuesByVehicleId.set(vehicleId, vehicleIssues);
+        });
+        return { issue, participantIds };
+      });
+      return { stepById, vehiclesById, issuesByVehicleId, conflictedIds, details };
+    }
+
+    function formatPressureIssue(model, issue, issueIndex = null) {
       if (!issue || typeof issue !== 'object') return String(issue || '未知错误');
-      const context = getPressureVehicleContext(model, issue);
-      const parts = [];
-      if (context.step !== null) parts.push(`第 ${context.step} 步`);
-      if (context.vehicleId !== null) parts.push(`车辆 #${context.vehicleId}`);
-      if (Number.isSafeInteger(issue.firstVehicleId) && issue.firstVehicleId !== context.vehicleId) {
-        parts.push(`关联车辆 #${issue.firstVehicleId}`);
-      }
+      const index = issueIndex || createPressureIssueIndex(model, [issue]);
+      const detail = index.details.find(item => item.issue === issue) || index.details[0];
+      const participantIds = detail ? [...detail.participantIds] : [];
+      const parts = participantIds.map(vehicleId => {
+        const step = index.stepById.get(vehicleId);
+        return `${step ? `第 ${step} 步 ` : ''}车辆 #${vehicleId}`;
+      });
+      const firstVehicle = participantIds.length > 0 ? index.vehiclesById.get(participantIds[0]) : null;
       const colorValue = Number.isSafeInteger(issue.colorValue)
         ? issue.colorValue
-        : context.vehicle ? context.vehicle.colorValue : null;
+        : firstVehicle ? firstVehicle.colorValue : null;
       if (colorValue !== null) {
         const color = getColor(colorValue);
         parts.push(`颜色 ${color ? color.name : '映射'}(${colorValue})`);
@@ -6588,15 +6639,6 @@
       }
       const compiled = window.PressureQueueCore.compileConstraints(parsed.model);
       return { parsed, compiled, issues: compiled.errors };
-    }
-
-    function getPressureConflictVehicleIds(issues) {
-      const ids = new Set();
-      issues.forEach(issue => {
-        if (Number.isSafeInteger(issue && issue.vehicleId)) ids.add(issue.vehicleId);
-        if (Number.isSafeInteger(issue && issue.firstVehicleId)) ids.add(issue.firstVehicleId);
-      });
-      return ids;
     }
 
     function pressureAnnotationIsDefault(annotation) {
@@ -6659,14 +6701,14 @@
       `;
     }
 
-    function renderPressureVehicleCard(model, vehicle, annotation, index, releaseSources, issues, conflictedIds) {
+    function renderPressureVehicleCard(model, vehicle, annotation, index, releaseSources, vehicleIssues, conflictedIds, stepById) {
       const color = getColor(vehicle.colorValue);
       const hex = color && HEX_PATTERN.test(color.hex) ? color.hex : '#87948f';
       const laterIds = model.path.slice(index + 1);
       const triggerOptions = [
         '<option value="">未设置</option>',
         ...laterIds.map(vehicleId => (
-          `<option value="${vehicleId}"${annotation.releaseTriggerVehicleId === vehicleId ? ' selected' : ''}>#${vehicleId} · 第 ${model.path.indexOf(vehicleId) + 1} 步</option>`
+          `<option value="${vehicleId}"${annotation.releaseTriggerVehicleId === vehicleId ? ' selected' : ''}>#${vehicleId} · 第 ${stepById.get(vehicleId)} 步</option>`
         ))
       ].join('');
       const settlementLabels = { normal: '正常', instant: '即时', empty: '空车', partial: '部分' };
@@ -6674,7 +6716,6 @@
         `<option value="${target}"${annotation.settlementTarget === target ? ' selected' : ''}>${settlementLabels[target]}</option>`
       )).join('');
       const sources = releaseSources.get(vehicle.id) || [];
-      const vehicleIssues = issues.filter(issue => issue.vehicleId === vehicle.id || issue.firstVehicleId === vehicle.id);
       const matchesFilter = pressureAnnotationMatchesFilter(annotation, conflictedIds);
       const collapsed = pressureQueueCollapseNormal && pressureAnnotationIsDefault(annotation);
       const hidden = !matchesFilter || collapsed;
@@ -6794,6 +6835,7 @@
           annotation.vehicleId === inspection.parsed.model.path[index]
         ));
       const liveIssues = prepared && inspection.compiled ? inspection.compiled.errors : [];
+      const issueIndex = createPressureIssueIndex(inspection.parsed.model, liveIssues);
       const hasMeaningfulInput = [
         'levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText'
       ].some(field => state.pressureQueue[field].trim() !== '');
@@ -6804,10 +6846,10 @@
         ...state.pressureQueue.errors,
         ...liveParseIssues.map(issue => formatPressureIssue(inspection.parsed.model, issue)),
         ...(state.pressureQueue.errors.length === 0
-          ? liveIssues.map(issue => formatPressureIssue(inspection.parsed.model, issue))
+          ? liveIssues.map(issue => formatPressureIssue(inspection.parsed.model, issue, issueIndex))
           : [])
       ].filter((message, index, messages) => message && messages.indexOf(message) === index);
-      const conflictedIds = getPressureConflictVehicleIds(liveIssues);
+      const conflictedIds = issueIndex.conflictedIds;
       const releaseSources = new Map();
       state.pressureQueue.annotations.forEach(annotation => {
         if (!annotation.pressureSlot || annotation.releaseTriggerVehicleId === null) return;
@@ -6815,13 +6857,22 @@
         sources.push(annotation.vehicleId);
         releaseSources.set(annotation.releaseTriggerVehicleId, sources);
       });
-      const vehiclesById = new Map(inspection.parsed.model.vehicles.map(vehicle => [vehicle.id, vehicle]));
+      const vehiclesById = issueIndex.vehiclesById;
       const cards = prepared
         ? inspection.parsed.model.path.map((vehicleId, index) => {
           const vehicle = vehiclesById.get(vehicleId);
           const annotation = state.pressureQueue.annotations[index];
           return vehicle && annotation
-            ? renderPressureVehicleCard(inspection.parsed.model, vehicle, annotation, index, releaseSources, liveIssues, conflictedIds)
+            ? renderPressureVehicleCard(
+              inspection.parsed.model,
+              vehicle,
+              annotation,
+              index,
+              releaseSources,
+              issueIndex.issuesByVehicleId.get(vehicleId) || [],
+              conflictedIds,
+              issueIndex.stepById
+            )
             : '';
         }).join('')
         : '';
@@ -6920,6 +6971,149 @@
         }
       });
       renderPressureQueueProgress();
+    }
+
+    function createPressureQueuePatchSnapshot() {
+      const inspection = inspectPressureQueueWorkspace();
+      const prepared = inspection.parsed.errors.length === 0
+        && state.pressureQueue.annotations.length === inspection.parsed.model.path.length
+        && state.pressureQueue.annotations.length > 0
+        && state.pressureQueue.annotations.every((annotation, index) => (
+          annotation.vehicleId === inspection.parsed.model.path[index]
+        ));
+      const liveIssues = prepared && inspection.compiled ? inspection.compiled.errors : [];
+      const issueIndex = createPressureIssueIndex(inspection.parsed.model, liveIssues);
+      const hasMeaningfulInput = [
+        'levelName', 'conveyorCapacity', 'passengerQueueText', 'vehicleTableText', 'clickSequenceText'
+      ].some(field => state.pressureQueue[field].trim() !== '');
+      const liveParseIssues = !prepared && hasMeaningfulInput && state.pressureQueue.errors.length === 0
+        ? inspection.parsed.errors
+        : [];
+      const displayedErrors = [
+        ...state.pressureQueue.errors,
+        ...liveParseIssues.map(issue => formatPressureIssue(inspection.parsed.model, issue)),
+        ...(state.pressureQueue.errors.length === 0
+          ? liveIssues.map(issue => formatPressureIssue(inspection.parsed.model, issue, issueIndex))
+          : [])
+      ].filter((message, index, messages) => message && messages.indexOf(message) === index);
+      const releaseSources = new Map();
+      state.pressureQueue.annotations.forEach(annotation => {
+        if (!annotation.pressureSlot || annotation.releaseTriggerVehicleId === null) return;
+        const sources = releaseSources.get(annotation.releaseTriggerVehicleId) || [];
+        sources.push(annotation.vehicleId);
+        releaseSources.set(annotation.releaseTriggerVehicleId, sources);
+      });
+      const cards = prepared
+        ? inspection.parsed.model.path.map((vehicleId, index) => {
+          const vehicle = issueIndex.vehiclesById.get(vehicleId);
+          const annotation = state.pressureQueue.annotations[index];
+          return {
+            vehicleId,
+            html: renderPressureVehicleCard(
+              inspection.parsed.model,
+              vehicle,
+              annotation,
+              index,
+              releaseSources,
+              issueIndex.issuesByVehicleId.get(vehicleId) || [],
+              issueIndex.conflictedIds,
+              issueIndex.stepById
+            )
+          };
+        })
+        : [];
+      return { inspection, prepared, issueIndex, displayedErrors, cards };
+    }
+
+    function createPressureCardElement(html) {
+      const template = document.createElement('template');
+      template.innerHTML = html.trim();
+      return template.content.firstElementChild;
+    }
+
+    function updatePressureFilterControlsInPlace(snapshot = null) {
+      const currentSnapshot = snapshot || createPressureQueuePatchSnapshot();
+      workspace.querySelectorAll('[data-pressure-filter]').forEach(button => {
+        const active = button.dataset.pressureFilter === pressureQueueFilter;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      const collapse = workspace.querySelector('[data-pressure-collapse-normal]');
+      if (collapse) collapse.setAttribute('aria-pressed', String(pressureQueueCollapseNormal));
+      state.pressureQueue.annotations.forEach(annotation => {
+        const card = workspace.querySelector(`.pressure-vehicle-card[data-vehicle-id="${annotation.vehicleId}"]`);
+        if (!card) return;
+        const matches = pressureAnnotationMatchesFilter(annotation, currentSnapshot.issueIndex.conflictedIds);
+        card.hidden = !matches || (pressureQueueCollapseNormal && pressureAnnotationIsDefault(annotation));
+      });
+    }
+
+    function patchPressureQueueStageInPlace() {
+      if (state.activeStage !== 'pressureQueue' || !workspace.querySelector('.pressure-workspace')) {
+        render();
+        return;
+      }
+      const snapshot = createPressureQueuePatchSnapshot();
+      const errors = workspace.querySelector('#pressureQueueErrors');
+      if (errors) {
+        errors.innerHTML = snapshot.displayedErrors
+          .map(message => `<div class="pressure-error-item">${escapePressureHtml(message)}</div>`)
+          .join('');
+      }
+      const resultSummary = workspace.querySelector('.pressure-result-summary');
+      if (resultSummary) {
+        const result = state.pressureQueue.result;
+        resultSummary.textContent = result
+          ? `最近结果：${result.status}；展开 ${Number.isSafeInteger(result.expanded) ? result.expanded : 0}；预算 ${Number.isSafeInteger(result.budget) ? result.budget : '—'}`
+          : '';
+      }
+      const boardCount = workspace.querySelector('.pressure-board-heading .empty-sequence');
+      if (boardCount) {
+        boardCount.textContent = snapshot.prepared
+          ? `${state.pressureQueue.annotations.length} 辆车 · 按路径排序`
+          : '请先准备路径标注';
+      }
+
+      const route = workspace.querySelector('.pressure-card-route');
+      if (!route) return;
+      if (!snapshot.prepared) {
+        route.innerHTML = '<p class="empty-sequence">输入合法关卡并点击“准备路径标注”，调度票将按正确路径出现。</p>';
+      } else {
+        const existingById = new Map(
+          [...route.querySelectorAll('.pressure-vehicle-card[data-vehicle-id]')]
+            .map(card => [Number(card.dataset.vehicleId), card])
+        );
+        const desiredNodes = snapshot.cards.map(({ vehicleId, html }) => {
+          const desired = createPressureCardElement(html);
+          const existing = existingById.get(vehicleId);
+          if (existing && existing.outerHTML === desired.outerHTML) {
+            existingById.delete(vehicleId);
+            return existing;
+          }
+          if (existing) {
+            existing.replaceWith(desired);
+            existingById.delete(vehicleId);
+          }
+          return desired;
+        });
+        existingById.forEach(card => card.remove());
+        [...route.children].forEach(child => {
+          if (!child.matches('.pressure-vehicle-card[data-vehicle-id]')) child.remove();
+        });
+        desiredNodes.forEach((node, index) => {
+          const current = route.children[index];
+          if (current !== node) route.insertBefore(node, current || null);
+        });
+      }
+      updatePressureFilterControlsInPlace(snapshot);
+      renderPressureQueueProgress();
+    }
+
+    function updatePressureStateInPlace(nextState) {
+      state = nextState;
+      updateSaveFeedback(saveState(state));
+      patchPressureQueueStageInPlace();
+      return state;
     }
 
     function fallbackCopyText(text) {
@@ -7111,9 +7305,192 @@
         };
         if (typeof window.requestAnimationFrame === 'function') {
           frameId = window.requestAnimationFrame(finish);
+          timeoutId = window.setTimeout(finish, 120);
+        } else {
+          timeoutId = window.setTimeout(finish, 0);
         }
-        timeoutId = window.setTimeout(finish, 0);
       });
+    }
+
+    function isPressureQueueIssue(value) {
+      return Boolean(value
+        && typeof value === 'object'
+        && !Array.isArray(value)
+        && typeof value.category === 'string'
+        && typeof value.code === 'string'
+        && typeof value.message === 'string'
+        && isJsonSafeValue(value));
+    }
+
+    function createPressureQueueRunnerFailure(code, message, budget, expanded = 0, status = 'input_error', errors = null) {
+      const safeBudget = Number.isSafeInteger(budget) && budget > 0 ? budget : 0;
+      const safeExpanded = Number.isSafeInteger(expanded) && expanded >= 0 ? expanded : 0;
+      const safeErrors = Array.isArray(errors) && errors.length > 0 && errors.every(isPressureQueueIssue)
+        ? errors.map(error => cloneJsonSafeValue(error))
+        : [window.PressureQueueCore.createIssue(status, code, message)];
+      return {
+        status,
+        layout: null,
+        errors: safeErrors,
+        expanded: safeExpanded,
+        budget: safeBudget
+      };
+    }
+
+    function inspectPressureQueueAdvanceResult(rawResult, model, compiled, fallbackBudget) {
+      if (!rawResult
+        || typeof rawResult !== 'object'
+        || Array.isArray(rawResult)
+        || !isJsonSafeValue(rawResult)) {
+        return {
+          terminal: true,
+          result: createPressureQueueRunnerFailure(
+            'malformed_search_result',
+            '搜索会话返回了非法或不可序列化的结果',
+            fallbackBudget
+          )
+        };
+      }
+
+      const result = cloneJsonSafeValue(rawResult);
+      const allowedStatuses = ['running', 'success', 'input_error', 'constraint_conflict', 'budget_exhausted'];
+      if (!allowedStatuses.includes(result.status)) {
+        return {
+          terminal: true,
+          result: createPressureQueueRunnerFailure(
+            'unknown_search_status',
+            `搜索会话返回了未知状态 ${String(result.status || '')}`,
+            fallbackBudget
+          )
+        };
+      }
+
+      const expanded = Number.isSafeInteger(result.expanded) && result.expanded >= 0
+        ? result.expanded
+        : null;
+      const budget = Number.isSafeInteger(result.budget) && result.budget > 0
+        ? result.budget
+        : null;
+      const errorsAreValid = Array.isArray(result.errors) && result.errors.every(isPressureQueueIssue);
+      if (expanded === null || budget === null || !errorsAreValid) {
+        return {
+          terminal: true,
+          result: createPressureQueueRunnerFailure(
+            'malformed_search_progress',
+            '搜索会话返回了非法进度或错误集合',
+            fallbackBudget,
+            expanded === null ? 0 : expanded
+          )
+        };
+      }
+
+      if (result.status === 'running') {
+        if (result.layout !== null
+          || !Number.isSafeInteger(result.frontier)
+          || result.frontier < 0) {
+          return {
+            terminal: true,
+            result: createPressureQueueRunnerFailure(
+              'malformed_running_result',
+              '搜索会话返回了非法运行中结果',
+              budget,
+              expanded
+            )
+          };
+        }
+        return {
+          terminal: false,
+          result: {
+            status: 'running',
+            layout: null,
+            errors: result.errors,
+            expanded,
+            budget,
+            frontier: result.frontier
+          }
+        };
+      }
+
+      if (result.status === 'success') {
+        if (!result.layout || typeof result.layout !== 'object' || Array.isArray(result.layout)) {
+          return {
+            terminal: true,
+            result: createPressureQueueRunnerFailure(
+              'invalid_success_layout',
+              '搜索会话声明成功但未提供有效布局',
+              budget,
+              expanded,
+              'constraint_conflict'
+            )
+          };
+        }
+
+        let verification;
+        try {
+          verification = window.PressureQueueCore.verify(model, compiled, result.layout);
+        } catch {
+          verification = null;
+        }
+        if (!verification
+          || !isJsonSafeValue(verification)
+          || !Array.isArray(verification.errors)
+          || !verification.errors.every(isPressureQueueIssue)) {
+          return {
+            terminal: true,
+            result: createPressureQueueRunnerFailure(
+              'success_verification_failed',
+              '成功布局无法完成独立严格验证',
+              budget,
+              expanded,
+              'constraint_conflict'
+            )
+          };
+        }
+        if (verification.errors.length > 0) {
+          return {
+            terminal: true,
+            result: createPressureQueueRunnerFailure(
+              'forged_success_layout',
+              '搜索会话声明的成功布局未通过独立严格验证',
+              budget,
+              expanded,
+              'constraint_conflict',
+              verification.errors
+            )
+          };
+        }
+
+        return {
+          terminal: true,
+          result: {
+            ...result,
+            status: 'success',
+            layout: cloneJsonSafeValue(result.layout),
+            verification: cloneJsonSafeValue(verification),
+            errors: [],
+            expanded,
+            budget
+          }
+        };
+      }
+
+      return {
+        terminal: true,
+        result: {
+          ...result,
+          status: result.status,
+          layout: null,
+          errors: result.errors.length > 0
+            ? result.errors
+            : [window.PressureQueueCore.createIssue(
+              result.status,
+              `${result.status}_terminal`,
+              '搜索未生成满足约束的队列'
+            )],
+          expanded,
+          budget
+        }
+      };
     }
 
     function getPressureQueueErrorMessages(status, errors, model) {
@@ -7156,7 +7533,6 @@
           ...nextState,
           pressureQueue: {
             ...nextState.pressureQueue,
-            annotations: [],
             result,
             errors: getPressureQueueErrorMessages('input_error', parsed.errors, parsed.model)
           }
@@ -7185,10 +7561,50 @@
         return result;
       }
 
-      const session = window.PressureQueueCore.createSearchSession(parsed.model, {
-        budget: parsed.model.searchBudget,
-        seed: parsed.model.seed
-      });
+      let session;
+      try {
+        session = window.PressureQueueCore.createSearchSession(parsed.model, {
+          budget: parsed.model.searchBudget,
+          seed: parsed.model.seed
+        });
+      } catch {
+        const result = createPressureQueueRunnerFailure(
+          'search_session_failed',
+          '创建搜索会话失败',
+          parsed.model.searchBudget
+        );
+        if (runToken !== pressureQueueRunToken) return null;
+        pressureQueueProgress = { ...result, frontier: 0 };
+        updateState({
+          ...nextState,
+          pressureQueue: {
+            ...nextState.pressureQueue,
+            result,
+            errors: getPressureQueueErrorMessages(result.status, result.errors, parsed.model)
+          }
+        });
+        return result;
+      }
+      const advanceProperty = getOwnDataValue(session, 'advance');
+      if (!advanceProperty.present || typeof advanceProperty.value !== 'function') {
+        const result = createPressureQueueRunnerFailure(
+          'invalid_search_session',
+          '搜索会话缺少可调用的推进函数',
+          parsed.model.searchBudget
+        );
+        if (runToken !== pressureQueueRunToken) return null;
+        pressureQueueProgress = { ...result, frontier: 0 };
+        updateState({
+          ...nextState,
+          pressureQueue: {
+            ...nextState.pressureQueue,
+            result,
+            errors: getPressureQueueErrorMessages(result.status, result.errors, parsed.model)
+          }
+        });
+        return result;
+      }
+      const advance = advanceProperty.value;
       pressureQueueProgress = {
         status: 'running',
         expanded: 0,
@@ -7206,34 +7622,53 @@
       };
       updateState(nextState);
 
-      let result;
-      do {
+      while (true) {
         if (runToken !== pressureQueueRunToken) return null;
-        result = session.advance(256);
+        let inspected;
+        try {
+          inspected = inspectPressureQueueAdvanceResult(
+            Reflect.apply(advance, session, [256]),
+            parsed.model,
+            compiled,
+            parsed.model.searchBudget
+          );
+        } catch {
+          inspected = {
+            terminal: true,
+            result: createPressureQueueRunnerFailure(
+              'search_advance_failed',
+              '推进搜索会话失败',
+              parsed.model.searchBudget,
+              pressureQueueProgress && pressureQueueProgress.expanded
+            )
+          };
+        }
         if (runToken !== pressureQueueRunToken) return null;
+        const result = inspected.result;
         pressureQueueProgress = {
           status: result.status,
-          expanded: Number.isSafeInteger(result.expanded) ? result.expanded : 0,
-          budget: Number.isSafeInteger(result.budget) ? result.budget : parsed.model.searchBudget,
-          frontier: Number.isSafeInteger(result.frontier) ? result.frontier : 0
+          expanded: result.expanded,
+          budget: result.budget,
+          frontier: inspected.terminal ? 0 : result.frontier
         };
         renderPressureQueueProgress();
         await waitForPressureQueueFrame();
-      } while (result.status === 'running');
+        if (runToken !== pressureQueueRunToken) return null;
+        if (!inspected.terminal) continue;
 
-      if (runToken !== pressureQueueRunToken) return null;
-      const errors = result.status === 'success'
-        ? []
-        : getPressureQueueErrorMessages(result.status, result.errors, parsed.model);
-      updateState({
-        ...state,
-        pressureQueue: {
-          ...state.pressureQueue,
-          result,
-          errors
-        }
-      });
-      return result;
+        const errors = result.status === 'success'
+          ? []
+          : getPressureQueueErrorMessages(result.status, result.errors, parsed.model);
+        updateState({
+          ...state,
+          pressureQueue: {
+            ...state.pressureQueue,
+            result,
+            errors
+          }
+        });
+        return result;
+      }
     }
 
     stageNav.addEventListener('click', event => {
@@ -7380,22 +7815,23 @@
         updateState(clearPathSolve(state));
       } else if (target.matches('[data-action="prepare-pressure-annotations"]')) {
         cancelPressureQueueRun(false);
-        updateState(preparePressureQueueAnnotations(setPressureQueueInput(state, getPressureQueueInputFromDom())));
+        updatePressureStateInPlace(preparePressureQueueAnnotations(setPressureQueueInput(state, getPressureQueueInputFromDom())));
       } else if (target.matches('[data-action="run-pressure-queue"]')) {
         void runPressureQueueFromDom();
       } else if (target.matches('[data-action="cancel-pressure-queue"]')) {
         cancelPressureQueueRun(true);
       } else if (target.matches('[data-action="clear-pressure-queue"]')) {
         cancelPressureQueueRun(false);
+        pressureQueueImportToken += 1;
         pressureQueueFilter = 'all';
         pressureQueueCollapseNormal = false;
         updateState(clearPressureQueue(state));
       } else if (target.matches('[data-pressure-filter]')) {
         pressureQueueFilter = target.dataset.pressureFilter;
-        renderPressureQueueStage();
+        updatePressureFilterControlsInPlace();
       } else if (target.matches('[data-pressure-collapse-normal]')) {
         pressureQueueCollapseNormal = !pressureQueueCollapseNormal;
-        renderPressureQueueStage();
+        updatePressureFilterControlsInPlace();
       }
     });
 
@@ -7453,10 +7889,24 @@
       }
 
       if (!patch) return;
+      const focusSelector = target.matches('[data-strength-field]')
+        ? `[data-strength-tag="${target.dataset.strengthTag}"][data-strength-field="${target.dataset.strengthField}"]`
+        : target.matches('[data-tag-toggle]')
+          ? `[data-tag-toggle="${target.dataset.tagToggle}"]`
+          : `[data-annotation-field="${target.dataset.annotationField}"]`;
+      const selection = target instanceof HTMLInputElement
+        && typeof target.selectionStart === 'number'
+        ? { start: target.selectionStart, end: target.selectionEnd }
+        : null;
       cancelPressureQueueRun(false);
-      updateState(setPressureQueueAnnotation(state, vehicleId, patch));
-      const replacement = workspace.querySelector(`.pressure-vehicle-card[data-vehicle-id="${vehicleId}"] [data-${target.matches('[data-strength-field]') ? `strength-tag="${target.dataset.strengthTag}"][data-strength-field="${target.dataset.strengthField}"` : target.matches('[data-tag-toggle]') ? `tag-toggle="${target.dataset.tagToggle}"` : `annotation-field="${target.dataset.annotationField}"`}]`);
-      if (replacement instanceof HTMLElement) replacement.focus({ preventScroll: true });
+      updatePressureStateInPlace(setPressureQueueAnnotation(state, vehicleId, patch));
+      const replacement = workspace.querySelector(`.pressure-vehicle-card[data-vehicle-id="${vehicleId}"] ${focusSelector}`);
+      if (replacement instanceof HTMLElement) {
+        replacement.focus({ preventScroll: true });
+        if (selection && replacement instanceof HTMLInputElement && typeof replacement.setSelectionRange === 'function') {
+          replacement.setSelectionRange(selection.start, selection.end);
+        }
+      }
     }
 
     workspace.addEventListener('input', event => {
@@ -7466,6 +7916,7 @@
         return;
       }
       cancelPressureQueueRun(false);
+      if (target.dataset.pressureField === 'vehicleTableText') pressureQueueImportToken += 1;
       state = setPressureQueueInput(state, getPressureQueueInputFromDom());
       updateSaveFeedback(saveState(state));
       const errors = workspace.querySelector('#pressureQueueErrors');
@@ -7480,19 +7931,22 @@
       if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
         && target.matches('[data-pressure-field]')) {
         cancelPressureQueueRun(false);
-        updateState(setPressureQueueInput(state, getPressureQueueInputFromDom()));
+        updatePressureStateInPlace(setPressureQueueInput(state, getPressureQueueInputFromDom()));
       } else if ((target instanceof HTMLInputElement || target instanceof HTMLSelectElement)
         && target.closest('.pressure-vehicle-card[data-vehicle-id]')
         && target.matches('[data-annotation-field], [data-tag-toggle], [data-strength-field]')) {
         updatePressureAnnotationFromControl(target);
       } else if (target instanceof HTMLInputElement && target.matches('#pressureQueueVehicleCsvFile') && target.files && target.files[0]) {
-        const inputSnapshot = getPressureQueueInputFromDom();
+        pressureQueueImportToken += 1;
+        const importToken = pressureQueueImportToken;
         void readFileAsText(target.files[0]).then(text => {
+          if (importToken !== pressureQueueImportToken) return;
           const textarea = workspace.querySelector('[data-pressure-field="vehicleTableText"]');
           if (textarea instanceof HTMLTextAreaElement) textarea.value = text;
           cancelPressureQueueRun(false);
-          updateState(setPressureQueueInput(state, { ...inputSnapshot, vehicleTableText: text }));
+          updateState(setPressureQueueInput(state, { vehicleTableText: text }));
         }).catch(error => {
+          if (importToken !== pressureQueueImportToken) return;
           cancelPressureQueueRun(false);
           updateState({
             ...state,
