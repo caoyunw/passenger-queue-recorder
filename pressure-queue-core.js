@@ -966,6 +966,392 @@
     };
   }
 
+  const SETTLEMENT_OPERATION_LIMIT = 100000;
+
+  function countArray(values) {
+    return Object.fromEntries(countValues(values));
+  }
+
+  function cloneSlot(slot) {
+    return slot === null ? null : {
+      vehicleId: slot.vehicleId,
+      colorValue: slot.colorValue,
+      capacity: slot.capacity,
+      remaining: slot.remaining
+    };
+  }
+
+  function refillOne(working) {
+    if (working.left.length > 0) working.belt.push(working.left.shift());
+    else if (working.right.length > 0) working.belt.push(working.right.shift());
+  }
+
+  function settle(working) {
+    const consumption = new Map();
+    const departedVehicleIds = [];
+    let operationCount = 0;
+    let guardExceeded = false;
+
+    while (true) {
+      const passengerIndex = working.belt.findIndex(colorValue => (
+        working.slots.some(slot => (
+          slot !== null && slot.colorValue === colorValue && slot.remaining > 0
+        ))
+      ));
+      if (passengerIndex === -1) break;
+      if (operationCount >= SETTLEMENT_OPERATION_LIMIT) {
+        guardExceeded = true;
+        break;
+      }
+
+      operationCount += 1;
+      const colorValue = working.belt[passengerIndex];
+      const slotIndex = working.slots.findIndex(slot => (
+        slot !== null && slot.colorValue === colorValue && slot.remaining > 0
+      ));
+      const slot = working.slots[slotIndex];
+      working.belt.splice(passengerIndex, 1);
+      slot.remaining -= 1;
+      consumption.set(slot.vehicleId, (consumption.get(slot.vehicleId) || 0) + 1);
+      refillOne(working);
+
+      if (slot.remaining === 0) {
+        departedVehicleIds.push(slot.vehicleId);
+        working.slots[slotIndex] = null;
+      }
+    }
+
+    return {
+      consumption: Object.fromEntries(consumption),
+      departedVehicleIds,
+      guardExceeded
+    };
+  }
+
+  function inspectSimulationModel(model) {
+    const errors = [];
+    const vehiclesValue = readOwnDataValue(model, 'vehicles').value;
+    const vehiclesInspection = inspectDenseArrayEntries(vehiclesValue);
+    const pathValue = readOwnDataValue(model, 'path').value;
+    const pathInspection = inspectDenseNonNegativeIntegerArray(pathValue);
+    const records = [];
+
+    if (!vehiclesInspection.dense) {
+      errors.push(createIssue(
+        'input_error',
+        'invalid_vehicles',
+        'Vehicles must be a dense array'
+      ));
+    } else {
+      vehiclesInspection.entries.forEach(entry => {
+        const vehicleIndex = entry.index;
+        const value = entry.value;
+        if (value === INVALID_JSON_DETAIL
+          || !value
+          || typeof value !== 'object'
+          || Array.isArray(value)
+          || !isPlainJsonObject(value)) {
+          errors.push(createIssue(
+            'input_error',
+            'invalid_vehicle',
+            `Vehicle at index ${vehicleIndex} must be a plain object`,
+            { vehicleIndex }
+          ));
+          return;
+        }
+
+        const idProperty = readOwnDataValue(value, 'id');
+        const colorProperty = readOwnDataValue(value, 'colorValue');
+        const capacityProperty = readOwnDataValue(value, 'capacity');
+        const frontProperty = readOwnDataValue(value, 'frontVehicleIds');
+        const validId = idProperty.present && isNonNegativeInteger(idProperty.value);
+        const validColorValue = colorProperty.present
+          && isNonNegativeInteger(colorProperty.value);
+        const validCapacity = capacityProperty.present
+          && isPositiveInteger(capacityProperty.value);
+        const frontInspection = frontProperty.present
+          ? inspectDenseNonNegativeIntegerArray(frontProperty.value)
+          : { valid: false, invalidIndices: [-1], values: [] };
+
+        if (!validId) {
+          errors.push(createIssue(
+            'input_error',
+            'invalid_vehicle_id',
+            `Vehicle at index ${vehicleIndex} has an invalid id`,
+            { vehicleIndex }
+          ));
+        }
+        if (!validColorValue) {
+          errors.push(createIssue(
+            'input_error',
+            'invalid_vehicle_color_value',
+            `Vehicle at index ${vehicleIndex} has an invalid color value`,
+            { vehicleIndex }
+          ));
+        }
+        if (!validCapacity) {
+          errors.push(createIssue(
+            'input_error',
+            'invalid_vehicle_capacity',
+            `Vehicle at index ${vehicleIndex} has an invalid capacity`,
+            { vehicleIndex }
+          ));
+        }
+        if (!frontInspection.valid) {
+          errors.push(createIssue(
+            'input_error',
+            'invalid_front_vehicle_ids',
+            `Vehicle at index ${vehicleIndex} has invalid front vehicle ids`,
+            { vehicleIndex }
+          ));
+        }
+
+        records.push({
+          vehicleIndex,
+          id: idProperty.value,
+          colorValue: colorProperty.value,
+          capacity: capacityProperty.value,
+          frontVehicleIds: frontInspection.valid ? frontInspection.values : [],
+          validId,
+          validColorValue,
+          validCapacity,
+          validFrontVehicleIds: frontInspection.valid
+        });
+      });
+    }
+
+    const idCounts = new Map();
+    records.forEach(record => {
+      if (record.validId) idCounts.set(record.id, (idCounts.get(record.id) || 0) + 1);
+    });
+    idCounts.forEach((count, vehicleId) => {
+      if (count > 1) {
+        errors.push(createIssue(
+          'input_error',
+          'duplicate_vehicle_id',
+          `Vehicle id ${vehicleId} is duplicated`,
+          { vehicleId }
+        ));
+      }
+    });
+
+    const knownVehicleIds = new Set(idCounts.keys());
+    records.forEach(record => {
+      if (!record.validId || !record.validFrontVehicleIds) return;
+      record.frontVehicleIds.forEach(frontVehicleId => {
+        if (!knownVehicleIds.has(frontVehicleId)) {
+          errors.push(createIssue(
+            'input_error',
+            'unknown_front_vehicle',
+            `Vehicle #${record.id} references unknown front vehicle #${frontVehicleId}`,
+            { vehicleId: record.id, frontVehicleId }
+          ));
+        }
+      });
+    });
+
+    if (!pathInspection.valid) {
+      pathInspection.invalidIndices.forEach(index => {
+        errors.push(createIssue(
+          'input_error',
+          'invalid_path_vehicle_id',
+          index < 0
+            ? 'Path must be a dense array of safe non-negative vehicle ids'
+            : `Path step ${index + 1} has an invalid vehicle id`,
+          { step: index < 0 ? 0 : index + 1, index }
+        ));
+      });
+    }
+
+    const path = pathInspection.valid ? pathInspection.values : [];
+    const seenPathIds = new Set();
+    path.forEach((vehicleId, index) => {
+      if (seenPathIds.has(vehicleId)) {
+        errors.push(createIssue(
+          'input_error',
+          'duplicate_path_vehicle_id',
+          `Path repeats vehicle #${vehicleId}`,
+          { step: index + 1, vehicleId }
+        ));
+      } else {
+        seenPathIds.add(vehicleId);
+      }
+      if (!knownVehicleIds.has(vehicleId)) {
+        errors.push(createIssue(
+          'input_error',
+          'unknown_path_vehicle',
+          `Path references unknown vehicle #${vehicleId}`,
+          { step: index + 1, vehicleId }
+        ));
+      }
+    });
+
+    const vehicles = records
+      .filter(record => (
+        record.validId
+          && record.validColorValue
+          && record.validCapacity
+          && record.validFrontVehicleIds
+          && idCounts.get(record.id) === 1
+      ))
+      .map(record => ({
+        id: record.id,
+        colorValue: record.colorValue,
+        capacity: record.capacity,
+        frontVehicleIds: [...record.frontVehicleIds]
+      }));
+
+    return { vehicles, path, errors };
+  }
+
+  function inspectSimulationLayout(layout) {
+    const errors = [];
+    const fields = [
+      ['belt', 'invalid_belt', 'Belt'],
+      ['left', 'invalid_left_queue', 'Left queue'],
+      ['right', 'invalid_right_queue', 'Right queue']
+    ];
+    const values = { belt: [], left: [], right: [] };
+
+    fields.forEach(([field, code, label]) => {
+      const inspection = inspectDenseNonNegativeIntegerArray(
+        readOwnDataValue(layout, field).value
+      );
+      if (!inspection.valid) {
+        errors.push(createIssue(
+          'input_error',
+          code,
+          `${label} must be a dense array of safe non-negative integers`,
+          { invalidIndices: inspection.invalidIndices }
+        ));
+        return;
+      }
+      values[field] = [...inspection.values];
+    });
+
+    return { ...values, errors };
+  }
+
+  function simulationResult(working, initial, steps, departureStepById, remaining, errors) {
+    return {
+      initial,
+      steps,
+      departureStepById,
+      finalBelt: [...working.belt],
+      finalLeft: [...working.left],
+      finalRight: [...working.right],
+      finalSlots: working.slots.map(cloneSlot),
+      remainingVehicleIds: [...remaining],
+      errors
+    };
+  }
+
+  function simulate(model, layout) {
+    const inspectedModel = inspectSimulationModel(model);
+    const inspectedLayout = inspectSimulationLayout(layout);
+    const errors = [...inspectedModel.errors, ...inspectedLayout.errors];
+    const byId = new Map(inspectedModel.vehicles.map(vehicle => [vehicle.id, vehicle]));
+    const remaining = new Set(inspectedModel.vehicles.map(vehicle => vehicle.id));
+    const working = {
+      belt: [...inspectedLayout.belt],
+      left: [...inspectedLayout.left],
+      right: [...inspectedLayout.right],
+      slots: [null, null, null, null]
+    };
+    const initial = {
+      belt: [...working.belt],
+      left: [...working.left],
+      right: [...working.right],
+      slots: working.slots.map(cloneSlot)
+    };
+    const steps = [];
+    const departureStepById = {};
+
+    if (errors.length > 0) {
+      return simulationResult(
+        working,
+        initial,
+        steps,
+        departureStepById,
+        remaining,
+        errors
+      );
+    }
+
+    for (let index = 0; index < inspectedModel.path.length; index += 1) {
+      const vehicleId = inspectedModel.path[index];
+      const vehicle = byId.get(vehicleId);
+      const blockerIds = vehicle.frontVehicleIds.filter(frontVehicleId => (
+        remaining.has(frontVehicleId)
+      ));
+      if (blockerIds.length > 0) {
+        errors.push(createIssue(
+          'input_error',
+          'clicked_blocked_vehicle',
+          `Step ${index + 1} clicked blocked vehicle #${vehicleId}`,
+          { step: index + 1, vehicleId, blockerIds }
+        ));
+        break;
+      }
+
+      const emptySlotIndex = working.slots.findIndex(slot => slot === null);
+      if (emptySlotIndex === -1) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'no_empty_slot',
+          `Step ${index + 1} has no empty parking slot for vehicle #${vehicleId}`,
+          { step: index + 1, vehicleId }
+        ));
+        break;
+      }
+
+      const freeSlotsBefore = working.slots.filter(slot => slot === null).length;
+      working.slots[emptySlotIndex] = {
+        vehicleId,
+        colorValue: vehicle.colorValue,
+        capacity: vehicle.capacity,
+        remaining: vehicle.capacity
+      };
+      remaining.delete(vehicleId);
+      const settled = settle(working);
+      settled.departedVehicleIds.forEach(id => {
+        departureStepById[id] = index + 1;
+      });
+      steps.push({
+        step: index + 1,
+        clickedVehicleId: vehicleId,
+        enteredSlot: emptySlotIndex + 1,
+        freeSlotsBefore,
+        freeSlotsAfter: working.slots.filter(slot => slot === null).length,
+        consumption: settled.consumption,
+        departedVehicleIds: [...settled.departedVehicleIds],
+        slots: working.slots.map(cloneSlot),
+        belt: [...working.belt],
+        beltCounts: countArray(working.belt),
+        leftRemaining: working.left.length,
+        rightRemaining: working.right.length
+      });
+      if (settled.guardExceeded) {
+        errors.push(createIssue(
+          'constraint_conflict',
+          'settlement_guard_exceeded',
+          `Step ${index + 1} settlement exceeded the safety limit`,
+          { step: index + 1, vehicleId }
+        ));
+        break;
+      }
+    }
+
+    return simulationResult(
+      working,
+      initial,
+      steps,
+      departureStepById,
+      remaining,
+      errors
+    );
+  }
+
   global.PressureQueueCore = Object.freeze({
     SETTLEMENT_TARGETS,
     STRENGTH_MODES,
@@ -980,6 +1366,7 @@
     countValues,
     createIssue,
     validateBaseInput,
-    compileConstraints
+    compileConstraints,
+    simulate
   });
 }(window));
