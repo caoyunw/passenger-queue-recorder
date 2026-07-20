@@ -4693,6 +4693,9 @@
 
     function setStableSimulationInput(state, input) {
       if (!isValidState(state) || !input || typeof input !== 'object') return state;
+      const splitQueueFields = ['beltQueueText', 'leftQueueText', 'rightQueueText'];
+      const hasSplitQueueInput = splitQueueFields.some(field => typeof input[field] === 'string');
+      const hasLegacyQueueInput = typeof input.passengerQueueText === 'string';
       const nextFields = {
         levelName: typeof input.levelName === 'string' ? input.levelName.trim() : state.simulation.levelName,
         conveyorCapacity: typeof input.conveyorCapacity === 'string' ? input.conveyorCapacity.trim() : state.simulation.conveyorCapacity,
@@ -4702,9 +4705,20 @@
         vehicleTableText: typeof input.vehicleTableText === 'string' ? input.vehicleTableText.trim() : state.simulation.vehicleTableText,
         clickSequenceText: typeof input.clickSequenceText === 'string' ? input.clickSequenceText.trim() : state.simulation.clickSequenceText
       };
-      nextFields.passengerQueueText = typeof input.passengerQueueText === 'string'
-        ? input.passengerQueueText.trim()
-        : getStableSimulationMergedPassengerQueueText(nextFields);
+      const hasOnlyLegacyQueue = splitQueueFields.every(field => nextFields[field] === '')
+        && state.simulation.passengerQueueText !== '';
+      if (!hasSplitQueueInput && (hasLegacyQueueInput || hasOnlyLegacyQueue)) {
+        Object.assign(nextFields, getStableSimulationReportQueueParts({
+          ...nextFields,
+          beltQueueText: '',
+          leftQueueText: '',
+          rightQueueText: '',
+          passengerQueueText: hasLegacyQueueInput
+            ? input.passengerQueueText.trim()
+            : state.simulation.passengerQueueText
+        }));
+      }
+      nextFields.passengerQueueText = getStableSimulationMergedPassengerQueueText(nextFields);
       const inputChanged = nextFields.levelName !== state.simulation.levelName
         || nextFields.conveyorCapacity !== state.simulation.conveyorCapacity
         || nextFields.beltQueueText !== state.simulation.beltQueueText

@@ -2543,6 +2543,22 @@
           equal(parsed.clickSequence, [1, 2], '点击序列解析错误');
         });
 
+        test('立即结算模拟器归一化旧合并队列且局部更新不丢队列', () => {
+          let state = core.createInitialState();
+          state = core.setStableSimulationInput(state, {
+            conveyorCapacity: '4',
+            passengerQueueText: '1,1,1,1,3,3'
+          });
+          equal(state.simulation.beltQueueText, '1,1,1,1', '旧合并队列未归一化为传送带');
+          equal(state.simulation.leftQueueText, '', '旧合并队列不应自动写入左队列');
+          equal(state.simulation.rightQueueText, '3,3', '旧合并队列未归一化为右队列');
+
+          state = core.setStableSimulationInput(state, { clickSequenceText: '1' });
+          equal(state.simulation.passengerQueueText, '1,1,1,1,3,3', '局部更新丢失了合并队列');
+          equal(state.simulation.beltQueueText, '1,1,1,1', '局部更新丢失了传送带');
+          equal(state.simulation.rightQueueText, '3,3', '局部更新丢失了右队列');
+        });
+
         test('立即结算模拟器按乘客映射值显示颜色名称', () => {
           let state = core.createInitialState();
           state = core.setStableSimulationInput(state, {
